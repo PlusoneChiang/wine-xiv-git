@@ -1,0 +1,192 @@
+name: Build and Release Wine-XIV
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-arch:
+    name: Build (Arch Linux)
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile
+        env:
+          XDG_CACHE_HOME: /tmp/.cache
+        run: |
+          echo -e "[multilib]\nInclude = /etc/pacman.d/mirrorlist" >> /etc/pacman.conf
+          pacman -Syu --noconfirm base-devel sudo jack
+          cd wine-tkg-git
+          sed -i 's/pkgname=wine-tkg/pkgname=wine-xiv/' non-makepkg-build.sh
+          sed -i 's/wayland_driver="false"/wayland_driver="true"/' customization.cfg
+          sed -i 's/_NOLIB32="false"/_NOLIB32="wow64"/' wine-tkg-profiles/advanced-customization.cfg
+          echo '_ci_build="true"' >> customization.cfg
+          touch tarplz
+          yes|./non-makepkg-build.sh
+      - name: Prepare release asset
+        run: |
+          cd wine-tkg-git/non-makepkg-builds
+          # Find the built tar file and extract version from filename
+          TAR_FILE=$(ls *.tar 2>/dev/null | head -1)
+          if [ -z "$TAR_FILE" ]; then
+            echo "ERROR: No tar file found in non-makepkg-builds"
+            ls -la
+            exit 1
+          fi
+          echo "Found: $TAR_FILE"
+          # Extract version: wine-xiv-staging-fsync-git-{version}.tar -> {version}
+          VERSION=$(echo "$TAR_FILE" | sed 's/^wine-xiv-staging-fsync-git-//;s/\.tar$//')
+          echo "Version: $VERSION"
+          echo "$VERSION" > VERSION.txt
+          # Recompress as .tar.xz with distro name
+          RELEASE_NAME="wine-xiv-staging-fsync-git-arch-${VERSION}.tar.xz"
+          echo "Creating: $RELEASE_NAME"
+          # Extract tar then repack as tar.xz with correct directory name
+          mkdir -p repack
+          tar xf "$TAR_FILE" -C repack
+          EXTRACTED_DIR=$(ls repack)
+          mv "repack/$EXTRACTED_DIR" "repack/wine-xiv-staging-fsync-git-arch-${VERSION}"
+          (cd repack && tar cJf "../$RELEASE_NAME" "wine-xiv-staging-fsync-git-arch-${VERSION}")
+          rm -rf repack "$TAR_FILE"
+          echo "RELEASE_NAME=$RELEASE_NAME" >> $GITHUB_ENV
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wine-xiv-arch
+          path: |
+            wine-tkg-git/non-makepkg-builds/*.tar.xz
+            wine-tkg-git/non-makepkg-builds/VERSION.txt
+
+  build-fedora:
+    name: Build (Fedora)
+    runs-on: ubuntu-latest
+    container: fedora:latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile
+        run: |
+          sudo dnf -y -q upgrade --refresh
+          cd wine-tkg-git
+          sed -i 's/pkgname=wine-tkg/pkgname=wine-xiv/' non-makepkg-build.sh
+          sed -i 's/_wayland_driver="false"/_wayland_driver="true"/' customization.cfg
+          sed -i 's/_NOLIB32="false"/_NOLIB32="wow64"/' wine-tkg-profiles/advanced-customization.cfg
+          echo '_ci_build="true"' >> customization.cfg
+          touch tarplz
+          yes|./non-makepkg-build.sh
+      - name: Prepare release asset
+        run: |
+          cd wine-tkg-git/non-makepkg-builds
+          TAR_FILE=$(ls *.tar 2>/dev/null | head -1)
+          if [ -z "$TAR_FILE" ]; then
+            echo "ERROR: No tar file found"
+            ls -la
+            exit 1
+          fi
+          VERSION=$(echo "$TAR_FILE" | sed 's/^wine-xiv-staging-fsync-git-//;s/\.tar$//')
+          echo "$VERSION" > VERSION.txt
+          RELEASE_NAME="wine-xiv-staging-fsync-git-fedora-${VERSION}.tar.xz"
+          mkdir -p repack
+          tar xf "$TAR_FILE" -C repack
+          EXTRACTED_DIR=$(ls repack)
+          mv "repack/$EXTRACTED_DIR" "repack/wine-xiv-staging-fsync-git-fedora-${VERSION}"
+          (cd repack && tar cJf "../$RELEASE_NAME" "wine-xiv-staging-fsync-git-fedora-${VERSION}")
+          rm -rf repack "$TAR_FILE"
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wine-xiv-fedora
+          path: |
+            wine-tkg-git/non-makepkg-builds/*.tar.xz
+            wine-tkg-git/non-makepkg-builds/VERSION.txt
+
+  build-ubuntu:
+    name: Build (Ubuntu)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile
+        run: |
+          sudo dpkg --add-architecture i386 && sudo apt update
+          sudo apt install aptitude
+          sudo aptitude remove -y '?narrow(?installed,?version(deb.sury.org))'
+          sudo apt install libxkbregistry-dev
+          cd wine-tkg-git
+          sed -i 's/pkgname=wine-tkg/pkgname=wine-xiv/' non-makepkg-build.sh
+          sed -i 's/_wayland_driver="false"/_wayland_driver="true"/' customization.cfg
+          sed -i 's/_NOLIB32="false"/_NOLIB32="wow64"/' wine-tkg-profiles/advanced-customization.cfg
+          sed -i 's/-W ntdll-NtAlertThreadByThreadId/-W ntdll-NtAlertThreadByThreadId -W vcomp_for_dynamic_init_i8/' wine-tkg-profiles/advanced-customization.cfg
+          echo '_ci_build="true"' >> customization.cfg
+          touch tarplz
+          yes|./non-makepkg-build.sh
+      - name: Prepare release asset
+        run: |
+          cd wine-tkg-git/non-makepkg-builds
+          TAR_FILE=$(ls *.tar 2>/dev/null | head -1)
+          if [ -z "$TAR_FILE" ]; then
+            echo "ERROR: No tar file found"
+            ls -la
+            exit 1
+          fi
+          VERSION=$(echo "$TAR_FILE" | sed 's/^wine-xiv-staging-fsync-git-//;s/\.tar$//')
+          echo "$VERSION" > VERSION.txt
+          RELEASE_NAME="wine-xiv-staging-fsync-git-ubuntu-${VERSION}.tar.xz"
+          mkdir -p repack
+          tar xf "$TAR_FILE" -C repack
+          EXTRACTED_DIR=$(ls repack)
+          mv "repack/$EXTRACTED_DIR" "repack/wine-xiv-staging-fsync-git-ubuntu-${VERSION}"
+          (cd repack && tar cJf "../$RELEASE_NAME" "wine-xiv-staging-fsync-git-ubuntu-${VERSION}")
+          rm -rf repack "$TAR_FILE"
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wine-xiv-ubuntu
+          path: |
+            wine-tkg-git/non-makepkg-builds/*.tar.xz
+            wine-tkg-git/non-makepkg-builds/VERSION.txt
+
+  release:
+    name: Create Release
+    needs: [build-arch, build-fedora, build-ubuntu]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare release
+        id: prep
+        run: |
+          # Read version from any artifact
+          VERSION=$(cat artifacts/wine-xiv-arch/VERSION.txt)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Release version: $VERSION"
+
+          # Collect all tar.xz files
+          mkdir -p release-assets
+          find artifacts -name "*.tar.xz" -exec cp {} release-assets/ \;
+          echo "Release assets:"
+          ls -lh release-assets/
+
+      - name: Create tag and release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.prep.outputs.version }}
+          name: wine-xiv ${{ steps.prep.outputs.version }}
+          body: |
+            Wine-XIV build for XIVTheCalamity.
+
+            Based on [goatcorp/wine-xiv-git](https://github.com/goatcorp/wine-xiv-git).
+
+            | Variant | Target |
+            |---------|--------|
+            | `arch` | SteamOS / Arch Linux / Manjaro |
+            | `fedora` | Bazzite / Fedora / RHEL |
+            | `ubuntu` | Ubuntu / Debian |
+          files: release-assets/*.tar.xz
+          draft: false
+          prerelease: false
