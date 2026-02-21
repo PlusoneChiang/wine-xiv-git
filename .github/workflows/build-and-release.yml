@@ -60,7 +60,7 @@ jobs:
   build-fedora:
     name: Build (Fedora)
     runs-on: ubuntu-latest
-    container: fedora:latest
+    container: fedora:41
     steps:
       - uses: actions/checkout@v4
       - name: Compile
