@@ -34,9 +34,12 @@ jobs:
             exit 1
           fi
           echo "Found: $TAR_FILE"
-          # Extract version: wine-xiv-staging-fsync-git-{version}.tar -> {version}
-          VERSION=$(echo "$TAR_FILE" | sed 's/^wine-xiv-staging-fsync-git-//;s/\.tar$//')
-          echo "Version: $VERSION"
+          # Build deterministic release version from base version + commit SHA
+          BASE_VERSION=$(echo "$TAR_FILE" | sed 's/^wine-xiv-staging-fsync-git-//;s/\.tar$//')
+          SHORT_SHA=$(echo "$GITHUB_SHA" | cut -c1-7)
+          VERSION="${BASE_VERSION}-${SHORT_SHA}"
+          echo "Base version: $BASE_VERSION"
+          echo "Release version: $VERSION"
           echo "$VERSION" > VERSION.txt
           # Recompress as .tar.xz with distro name
           RELEASE_NAME="wine-xiv-staging-fsync-git-arch-${VERSION}.tar.xz"
@@ -82,7 +85,9 @@ jobs:
             ls -la
             exit 1
           fi
-          VERSION=$(echo "$TAR_FILE" | sed 's/^wine-xiv-staging-fsync-git-//;s/\.tar$//')
+          BASE_VERSION=$(echo "$TAR_FILE" | sed 's/^wine-xiv-staging-fsync-git-//;s/\.tar$//')
+          SHORT_SHA=$(echo "$GITHUB_SHA" | cut -c1-7)
+          VERSION="${BASE_VERSION}-${SHORT_SHA}"
           echo "$VERSION" > VERSION.txt
           RELEASE_NAME="wine-xiv-staging-fsync-git-fedora-${VERSION}.tar.xz"
           mkdir -p repack
@@ -127,7 +132,9 @@ jobs:
             ls -la
             exit 1
           fi
-          VERSION=$(echo "$TAR_FILE" | sed 's/^wine-xiv-staging-fsync-git-//;s/\.tar$//')
+          BASE_VERSION=$(echo "$TAR_FILE" | sed 's/^wine-xiv-staging-fsync-git-//;s/\.tar$//')
+          SHORT_SHA=$(echo "$GITHUB_SHA" | cut -c1-7)
+          VERSION="${BASE_VERSION}-${SHORT_SHA}"
           echo "$VERSION" > VERSION.txt
           RELEASE_NAME="wine-xiv-staging-fsync-git-ubuntu-${VERSION}.tar.xz"
           mkdir -p repack
@@ -161,8 +168,15 @@ jobs:
       - name: Prepare release
         id: prep
         run: |
-          # Read version from any artifact
-          VERSION=$(cat artifacts/wine-xiv-arch/VERSION.txt)
+          # Validate artifact versions are consistent
+          VERSIONS=$(find artifacts -name "VERSION.txt" -exec cat {} \; | sed '/^$/d' | sort -u)
+          VERSION_COUNT=$(printf '%s\n' "$VERSIONS" | wc -l | xargs)
+          if [ "$VERSION_COUNT" -ne 1 ]; then
+            echo "ERROR: Inconsistent VERSION.txt values across artifacts:"
+            printf '%s\n' "$VERSIONS"
+            exit 1
+          fi
+          VERSION=$(printf '%s\n' "$VERSIONS" | head -1)
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Release version: $VERSION"
 
