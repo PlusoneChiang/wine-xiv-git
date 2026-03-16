@@ -1,0 +1,901 @@
+From 0bc3e98b3e1e8f90f5209b7b1ef0b8f569172861 Mon Sep 17 00:00:00 2001
+From: Byeongsik Jeon <bsjeon@hanmail.net>
+Date: Tue, 8 Apr 2025 21:00:28 +0900
+Subject: [PATCH 112/486] win32u: Support WM_IME_KEYDOWN message during
+ ImeProcessKey.
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+In Korean input, when ime is in the composition state, if a non-printable key
+(ENTER, HOME, etc) is pressed, it returns a result_string and passes the key
+to WinProc with the WM_IME_KEYDOWN message.
+
+This can be seen in ‘imm32/test/imm32.c::test_ga_na_da()’.
+
+In the current winemac.drv, if I select the “Korean 2-Set Keyboard” as the
+input source and type ‘r-k-ENTER’, it only returns the result string ‘0xAC00’.
+No WM_IME_KEYDOWN message is generated.
+
+At this point, the WINE_IME_POST_UPDATE call occurs and macdrv_ImeProcessKey
+returns FALSE. A FALSE return value means that the key has not been consumed
+by ime and the key should be passed to the WinProc as a raw WM_KEYDOWN.
+
+However, because the ime_update call have occurred, ImeProcessKey should return
+TRUE and a raw WM_KEYDOWN message should be generated via a different path.
+So a WM_IME_KEYDOWN message is required.
+
+This patch allows the macdrv_ImeProcessKey return value to be passed to
+ImeToAsciiEx() to determine if a WM_IME_KEYDOWN message should be generated.
+---
+ dlls/imm32/ime.c     |  8 ++++++++
+ dlls/win32u/imm.c    | 10 ++++++++--
+ dlls/wow64win/user.c |  2 ++
+ include/ntuser.h     |  1 +
+ 4 files changed, 19 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/imm32/ime.c b/dlls/imm32/ime.c
+index 6f1d68ad0d4..77caf884efa 100644
+--- a/dlls/imm32/ime.c
++++ b/dlls/imm32/ime.c
+@@ -529,6 +529,7 @@ UINT WINAPI ImeToAsciiEx( UINT vkey, UINT vsc, BYTE *state, TRANSMSGLIST *msgs,
+     UINT size, count = 0;
+     INPUTCONTEXT *ctx;
+     NTSTATUS status;
++    BOOL key_consumed = TRUE;
+ 
+     TRACE( "vkey %#x, vsc %#x, state %p, msgs %p, flags %#x, himc %p\n",
+            vkey, vsc, state, msgs, flags, himc );
+@@ -547,6 +548,7 @@ UINT WINAPI ImeToAsciiEx( UINT vkey, UINT vsc, BYTE *state, TRANSMSGLIST *msgs,
+         if (!(compstr = ImmLockIMCC( (ctx->hCompStr = himcc) ))) goto done;
+ 
+         params.compstr = compstr;
++        params.key_consumed = &key_consumed;
+         status = NtUserMessageCall( ctx->hWnd, WINE_IME_TO_ASCII_EX, vkey, vsc, &params,
+                                     NtUserImeDriverCall, FALSE );
+         size = compstr->dwSize;
+@@ -575,6 +577,12 @@ UINT WINAPI ImeToAsciiEx( UINT vkey, UINT vsc, BYTE *state, TRANSMSGLIST *msgs,
+             else msg.lParam |= CS_INSERTCHAR|CS_NOMOVECARET;
+             msgs->TransMsg[count++] = msg;
+         }
++
++        if (!key_consumed)
++        {
++            TRANSMSG msg = {.message = WM_IME_KEYDOWN, .wParam = vkey, .lParam = vsc};
++            msgs->TransMsg[count++] = msg;
++        }
+     }
+ 
+     ImmUnlockIMCC( ctx->hCompStr );
+diff --git a/dlls/win32u/imm.c b/dlls/win32u/imm.c
+index 717dbf43ee6..c0ed670e779 100644
+--- a/dlls/win32u/imm.c
++++ b/dlls/win32u/imm.c
+@@ -39,6 +39,7 @@ struct ime_update
+     struct list entry;
+     WORD vkey;
+     WORD scan;
++    BOOL key_consumed;
+     DWORD cursor_pos;
+     WCHAR *comp_str;
+     WCHAR *result_str;
+@@ -478,6 +479,7 @@ static void post_ime_update( HWND hwnd, UINT cursor_pos, WCHAR *comp_str, WCHAR
+         pthread_mutex_lock( &imm_mutex );
+         id = update->scan = ++ime_update_count;
+         update->vkey = VK_PROCESSKEY;
++        update->key_consumed = TRUE;
+         list_add_tail( &ime_updates, &update->entry );
+         pthread_mutex_unlock( &imm_mutex );
+ 
+@@ -503,7 +505,8 @@ static struct ime_update *find_ime_update( WORD vkey, WORD scan )
+     return NULL;
+ }
+ 
+-UINT ime_to_tascii_ex( UINT vkey, UINT lparam, const BYTE *state, COMPOSITIONSTRING *compstr, HIMC himc )
++static UINT ime_to_tascii_ex( UINT vkey, UINT lparam, const BYTE *state, COMPOSITIONSTRING *compstr,
++                              BOOL *key_consumed, HIMC himc )
+ {
+     UINT needed = sizeof(COMPOSITIONSTRING), comp_len, result_len;
+     struct ime_update *update;
+@@ -519,6 +522,8 @@ UINT ime_to_tascii_ex( UINT vkey, UINT lparam, const BYTE *state, COMPOSITIONSTR
+         return STATUS_NOT_FOUND;
+     }
+ 
++    *key_consumed = update->key_consumed;
++
+     if (!update->comp_str) comp_len = 0;
+     else
+     {
+@@ -611,6 +616,7 @@ LRESULT ime_driver_call( HWND hwnd, enum wine_ime_call call, WPARAM wparam, LPAR
+ 
+         if (data->update)
+         {
++            data->update->key_consumed = res;
+             pthread_mutex_lock( &imm_mutex );
+             list_add_tail( &ime_updates, &data->update->entry );
+             pthread_mutex_unlock( &imm_mutex );
+@@ -622,7 +628,7 @@ LRESULT ime_driver_call( HWND hwnd, enum wine_ime_call call, WPARAM wparam, LPAR
+         return res;
+     }
+     case WINE_IME_TO_ASCII_EX:
+-        return ime_to_tascii_ex( wparam, lparam, params->state, params->compstr, params->himc );
++        return ime_to_tascii_ex( wparam, lparam, params->state, params->compstr, params->key_consumed, params->himc );
+     case WINE_IME_POST_UPDATE:
+         post_ime_update( hwnd, wparam, (WCHAR *)lparam, (WCHAR *)params );
+         return 0;
+diff --git a/dlls/wow64win/user.c b/dlls/wow64win/user.c
+index 92ec72056f4..446858bb59e 100644
+--- a/dlls/wow64win/user.c
++++ b/dlls/wow64win/user.c
+@@ -3670,12 +3670,14 @@ NTSTATUS WINAPI wow64_NtUserMessageCall( UINT *args )
+                 ULONG himc;
+                 ULONG state;
+                 ULONG compstr;
++                ULONG key_consumed;
+             } *params32 = result_info;
+             struct ime_driver_call_params params;
+             if (msg == WINE_IME_POST_UPDATE) ERR( "Unexpected WINE_IME_POST_UPDATE message\n" );
+             params.himc = UlongToPtr( params32->himc );
+             params.state = UlongToPtr( params32->state );
+             params.compstr = UlongToPtr( params32->compstr );
++            params.key_consumed = UlongToPtr( params32->key_consumed );
+             return NtUserMessageCall( hwnd, msg, wparam, lparam, &params, type, ansi );
+         }
+ 
+diff --git a/include/ntuser.h b/include/ntuser.h
+index 14c32e38a87..19cb8dca4f4 100644
+--- a/include/ntuser.h
++++ b/include/ntuser.h
+@@ -648,6 +648,7 @@ struct ime_driver_call_params
+     HIMC himc;
+     const BYTE *state;
+     COMPOSITIONSTRING *compstr;
++    BOOL *key_consumed;
+ };
+ 
+ /* NtUserSystemTrayCall calls */
+-- 
+2.53.0
+
+From 59c98ea7687dfb13d059ab9b518891eb4321b52a Mon Sep 17 00:00:00 2001
+From: Alexandros Frantzis <alexandros.frantzis@collabora.com>
+Date: Tue, 3 Jun 2025 14:57:00 +0300
+Subject: [PATCH 118/486] winewayland: Improve cleanup of text-input pending
+ state.
+
+Ensure state resources are cleaned up when not needed, and also avoid
+memory leaks in case we get multiple events for the same state before
+a "done" event.
+---
+ dlls/winewayland.drv/wayland_text_input.c | 33 +++++++++++++++--------
+ 1 file changed, 22 insertions(+), 11 deletions(-)
+
+diff --git a/dlls/winewayland.drv/wayland_text_input.c b/dlls/winewayland.drv/wayland_text_input.c
+index 18f64797131..ddf30abe12a 100644
+--- a/dlls/winewayland.drv/wayland_text_input.c
++++ b/dlls/winewayland.drv/wayland_text_input.c
+@@ -60,6 +60,15 @@ static WCHAR *strdupUtoW(const char *str)
+     return ret;
+ }
+ 
++static void wayland_text_input_reset_pending_state(struct wayland_text_input *text_input)
++{
++    free(text_input->preedit_string);
++    text_input->preedit_string = NULL;
++    text_input->preedit_cursor_pos = 0;
++    free(text_input->commit_string);
++    text_input->commit_string = NULL;
++}
++
+ static void text_input_enter(void *data, struct zwp_text_input_v3 *zwp_text_input_v3,
+         struct wl_surface *surface)
+ {
+@@ -96,6 +105,7 @@ static void text_input_leave(void *data, struct zwp_text_input_v3 *zwp_text_inpu
+         post_ime_update(text_input->focused_hwnd, 0, NULL, NULL);
+         text_input->focused_hwnd = NULL;
+     }
++    wayland_text_input_reset_pending_state(text_input);
+     pthread_mutex_unlock(&text_input->mutex);
+ }
+ 
+@@ -103,18 +113,22 @@ static void text_input_preedit_string(void *data, struct zwp_text_input_v3 *zwp_
+         const char *text, int32_t cursor_begin, int32_t cursor_end)
+ {
+     struct wayland_text_input *text_input = data;
++    DWORD begin = 0, end = 0;
++    WCHAR *textW;
++
+     TRACE("data %p, text_input %p, text %s, cursor %d - %d.\n", data, zwp_text_input_v3,
+             debugstr_a(text), cursor_begin, cursor_end);
+ 
+-    pthread_mutex_lock(&text_input->mutex);
+-    if ((text_input->preedit_string = strdupUtoW(text)))
++    if ((textW = strdupUtoW(text)))
+     {
+-        DWORD begin = 0, end = 0;
+-
+         if (cursor_begin > 0) RtlUTF8ToUnicodeN(NULL, 0, &begin, text, cursor_begin);
+         if (cursor_end > 0) RtlUTF8ToUnicodeN(NULL, 0, &end, text, cursor_end);
+-        text_input->preedit_cursor_pos = MAKELONG(begin / sizeof(WCHAR), end / sizeof(WCHAR));
+     }
++
++    pthread_mutex_lock(&text_input->mutex);
++    free(text_input->preedit_string);
++    text_input->preedit_string = textW;
++    text_input->preedit_cursor_pos = MAKELONG(begin / sizeof(WCHAR), end / sizeof(WCHAR));
+     pthread_mutex_unlock(&text_input->mutex);
+ }
+ 
+@@ -125,6 +139,7 @@ static void text_input_commit_string(void *data, struct zwp_text_input_v3 *zwp_t
+     TRACE("data %p, text_input %p, text %s.\n", data, zwp_text_input_v3, debugstr_a(text));
+ 
+     pthread_mutex_lock(&text_input->mutex);
++    free(text_input->commit_string);
+     text_input->commit_string = strdupUtoW(text);
+     pthread_mutex_unlock(&text_input->mutex);
+ }
+@@ -149,12 +164,7 @@ static void text_input_done(void *data, struct zwp_text_input_v3 *zwp_text_input
+         post_ime_update(text_input->focused_hwnd, text_input->preedit_cursor_pos,
+                 text_input->preedit_string, text_input->commit_string);
+     }
+-
+-    free(text_input->preedit_string);
+-    text_input->preedit_string = NULL;
+-    text_input->preedit_cursor_pos = 0;
+-    free(text_input->commit_string);
+-    text_input->commit_string = NULL;
++    wayland_text_input_reset_pending_state(text_input);
+     pthread_mutex_unlock(&text_input->mutex);
+ }
+ 
+@@ -187,6 +197,7 @@ void wayland_text_input_deinit(void)
+     zwp_text_input_v3_destroy(text_input->zwp_text_input_v3);
+     text_input->zwp_text_input_v3 = NULL;
+     text_input->focused_hwnd = NULL;
++    wayland_text_input_reset_pending_state(text_input);
+     pthread_mutex_unlock(&text_input->mutex);
+ };
+ 
+-- 
+2.53.0
+
+From 86f15c8b69839a4317bf991afa33c951ccfb05d0 Mon Sep 17 00:00:00 2001
+From: Alexandros Frantzis <alexandros.frantzis@collabora.com>
+Date: Tue, 3 Jun 2025 16:39:47 +0300
+Subject: [PATCH 119/486] winewayland: Ignore text-input "done" events that
+ don't modify state.
+
+Compositors send a "done" event after every text-input commit, even if
+the reported state (preedit etc) hasn't changed. Acting on such events
+is at best wasteful, but can additionally lead to incorrect IME related
+effects (e.g., deleting the currently selected text), so ignore them,
+similarly to what Qt and GTK do.
+---
+ dlls/winewayland.drv/wayland_text_input.c | 41 ++++++++++++++++-------
+ dlls/winewayland.drv/waylanddrv.h         |  7 ++--
+ 2 files changed, 34 insertions(+), 14 deletions(-)
+
+diff --git a/dlls/winewayland.drv/wayland_text_input.c b/dlls/winewayland.drv/wayland_text_input.c
+index ddf30abe12a..52cfef27e50 100644
+--- a/dlls/winewayland.drv/wayland_text_input.c
++++ b/dlls/winewayland.drv/wayland_text_input.c
+@@ -62,13 +62,21 @@ static WCHAR *strdupUtoW(const char *str)
+ 
+ static void wayland_text_input_reset_pending_state(struct wayland_text_input *text_input)
+ {
+-    free(text_input->preedit_string);
+-    text_input->preedit_string = NULL;
+-    text_input->preedit_cursor_pos = 0;
++    free(text_input->preedit.string);
++    text_input->preedit.string = NULL;
++    text_input->preedit.cursor_pos = 0;
+     free(text_input->commit_string);
+     text_input->commit_string = NULL;
+ }
+ 
++static void wayland_text_input_reset_all_state(struct wayland_text_input *text_input)
++{
++    free(text_input->current_preedit.string);
++    text_input->current_preedit.string = NULL;
++    text_input->current_preedit.cursor_pos = 0;
++    wayland_text_input_reset_pending_state(text_input);
++}
++
+ static void text_input_enter(void *data, struct zwp_text_input_v3 *zwp_text_input_v3,
+         struct wl_surface *surface)
+ {
+@@ -105,7 +113,7 @@ static void text_input_leave(void *data, struct zwp_text_input_v3 *zwp_text_inpu
+         post_ime_update(text_input->focused_hwnd, 0, NULL, NULL);
+         text_input->focused_hwnd = NULL;
+     }
+-    wayland_text_input_reset_pending_state(text_input);
++    wayland_text_input_reset_all_state(text_input);
+     pthread_mutex_unlock(&text_input->mutex);
+ }
+ 
+@@ -126,9 +134,9 @@ static void text_input_preedit_string(void *data, struct zwp_text_input_v3 *zwp_
+     }
+ 
+     pthread_mutex_lock(&text_input->mutex);
+-    free(text_input->preedit_string);
+-    text_input->preedit_string = textW;
+-    text_input->preedit_cursor_pos = MAKELONG(begin / sizeof(WCHAR), end / sizeof(WCHAR));
++    free(text_input->preedit.string);
++    text_input->preedit.string = textW;
++    text_input->preedit.cursor_pos = MAKELONG(begin / sizeof(WCHAR), end / sizeof(WCHAR));
+     pthread_mutex_unlock(&text_input->mutex);
+ }
+ 
+@@ -158,12 +166,21 @@ static void text_input_done(void *data, struct zwp_text_input_v3 *zwp_text_input
+     pthread_mutex_lock(&text_input->mutex);
+     /* Some compositors will send a done event for every commit, regardless of
+      * the focus state of the text input. This behavior is arguably out of spec,
+-     * but otherwise harmless, so just ignore the new state in such cases. */
+-    if (text_input->focused_hwnd)
++     * but otherwise harmless, so just ignore the new state in such cases.
++     * Additionally ignore done events that don't actually modify the state. */
++    if (text_input->focused_hwnd &&
++        (text_input->commit_string ||
++         text_input->preedit.cursor_pos != text_input->current_preedit.cursor_pos ||
++         !!text_input->preedit.string != !!text_input->current_preedit.string ||
++         (text_input->preedit.string && text_input->current_preedit.string &&
++          wcscmp(text_input->preedit.string, text_input->current_preedit.string))))
+     {
+-        post_ime_update(text_input->focused_hwnd, text_input->preedit_cursor_pos,
+-                text_input->preedit_string, text_input->commit_string);
++        post_ime_update(text_input->focused_hwnd, text_input->preedit.cursor_pos,
++                text_input->preedit.string, text_input->commit_string);
+     }
++    free(text_input->current_preedit.string);
++    text_input->current_preedit = text_input->preedit;
++    text_input->preedit.string = NULL;
+     wayland_text_input_reset_pending_state(text_input);
+     pthread_mutex_unlock(&text_input->mutex);
+ }
+@@ -197,7 +214,7 @@ void wayland_text_input_deinit(void)
+     zwp_text_input_v3_destroy(text_input->zwp_text_input_v3);
+     text_input->zwp_text_input_v3 = NULL;
+     text_input->focused_hwnd = NULL;
+-    wayland_text_input_reset_pending_state(text_input);
++    wayland_text_input_reset_all_state(text_input);
+     pthread_mutex_unlock(&text_input->mutex);
+ };
+ 
+diff --git a/dlls/winewayland.drv/waylanddrv.h b/dlls/winewayland.drv/waylanddrv.h
+index 45181035c02..7f7e8b5e7b4 100644
+--- a/dlls/winewayland.drv/waylanddrv.h
++++ b/dlls/winewayland.drv/waylanddrv.h
+@@ -147,8 +147,11 @@ struct wayland_pointer
+ struct wayland_text_input
+ {
+     struct zwp_text_input_v3 *zwp_text_input_v3;
+-    WCHAR *preedit_string;
+-    DWORD preedit_cursor_pos;
++    struct
++    {
++        WCHAR *string;
++        DWORD cursor_pos;
++    } preedit, current_preedit;
+     WCHAR *commit_string;
+     HWND focused_hwnd;
+     pthread_mutex_t mutex;
+-- 
+2.53.0
+
+From 0a32b248e21b03db502d599f3acb50a659bf365a Mon Sep 17 00:00:00 2001
+From: Byeongsik Jeon <bsjeon@hanmail.net>
+Date: Sat, 12 Apr 2025 22:32:26 +0900
+Subject: [PATCH 120/486] imm32: Fix the WM_IME_COMPOSITION messages to be
+ between the WM_IME_{START|END}COMPOSITION message.
+
+This patch fixes a Japanese input issue in MS Office Visual Basic and Mery text
+editor ime inline mode. The following was considered:
+
+  1. Japanese ime: the result string message is always placed between
+     WM_IME_STARTCOMPOSITION and WM_IME_ENDCOMPOSITION. Currently in Wine,
+     the result string message follows WM_IME_ENDCOMPOSITION.
+
+     dlls/imm32/tests/imm32.c::test_nihongo_no().
+
+  2. Chinese ime: same as Japanese ime.
+
+  3. Korean ime: mostly the same, but there are some cases where it is not
+     (e.g. CPS_COMPLETE, 'r-k-RETURN'). However, I haven't found any problem
+     even if it behave like Japanese ime message order.
+
+  3. zero-length preedit string: as in MR !3115 commit d1f9aae, the message
+     followed by WM_IME_ENDCOMPOSITION. Currently in Wine, it is associated
+     with WM_IME_STARTCOMPOSITION.
+
+  4. zero-length result string: ignore.
+---
+ dlls/imm32/ime.c | 17 +++++++++++++----
+ 1 file changed, 13 insertions(+), 4 deletions(-)
+
+diff --git a/dlls/imm32/ime.c b/dlls/imm32/ime.c
+index 77caf884efa..536f67602f9 100644
+--- a/dlls/imm32/ime.c
++++ b/dlls/imm32/ime.c
+@@ -557,14 +557,17 @@ UINT WINAPI ImeToAsciiEx( UINT vkey, UINT vsc, BYTE *state, TRANSMSGLIST *msgs,
+     if (status) WARN( "WINE_IME_TO_ASCII_EX returned status %#lx\n", status );
+     else
+     {
+-        TRANSMSG status_msg = {.message = ime_set_composition_status( himc, !!compstr->dwCompStrOffset )};
+-        if (status_msg.message) msgs->TransMsg[count++] = status_msg;
++        if (compstr->dwCompStrOffset || compstr->dwResultStrLen)
++        {
++            TRANSMSG msg = {.message = ime_set_composition_status( himc, TRUE )};
++            if (msg.message == WM_IME_STARTCOMPOSITION) msgs->TransMsg[count++] = msg;
++        }
+ 
+-        if (compstr->dwResultStrOffset)
++        if (compstr->dwResultStrLen)
+         {
+             const WCHAR *result = (WCHAR *)((BYTE *)compstr + compstr->dwResultStrOffset);
+             TRANSMSG msg = {.message = WM_IME_COMPOSITION, .wParam = result[0], .lParam = GCS_RESULTSTR};
+-            if (compstr->dwResultClauseOffset) msg.lParam |= GCS_RESULTCLAUSE;
++            if (compstr->dwResultClauseLen) msg.lParam |= GCS_RESULTCLAUSE;
+             msgs->TransMsg[count++] = msg;
+         }
+ 
+@@ -578,6 +581,12 @@ UINT WINAPI ImeToAsciiEx( UINT vkey, UINT vsc, BYTE *state, TRANSMSGLIST *msgs,
+             msgs->TransMsg[count++] = msg;
+         }
+ 
++        if (!compstr->dwCompStrLen)
++        {
++            TRANSMSG msg = {.message = ime_set_composition_status( himc, FALSE )};
++            if (msg.message == WM_IME_ENDCOMPOSITION) msgs->TransMsg[count++] = msg;
++        }
++
+         if (!key_consumed)
+         {
+             TRANSMSG msg = {.message = WM_IME_KEYDOWN, .wParam = vkey, .lParam = vsc};
+-- 
+2.53.0
+
+From a9b1c6cce3fa03b5858a3139ee9eabca9e41383f Mon Sep 17 00:00:00 2001
+From: Etaash Mathamsetty
+ <45927311+Etaash-mathamsetty@users.noreply.github.com>
+Date: Tue, 24 Jun 2025 13:04:54 -0400
+Subject: [PATCH 129/486] winewayland: Use SEND_HWMSG_NO_RAW for keyboard.
+
+---
+ dlls/winewayland.drv/wayland_keyboard.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/dlls/winewayland.drv/wayland_keyboard.c b/dlls/winewayland.drv/wayland_keyboard.c
+index 39b42231b00..5234302884e 100644
+--- a/dlls/winewayland.drv/wayland_keyboard.c
++++ b/dlls/winewayland.drv/wayland_keyboard.c
+@@ -810,7 +810,7 @@ static void send_right_control(HWND hwnd, uint32_t state)
+     input.ki.wScan = 0xe000 | (key2scan(KEY_RIGHTCTRL) & 0xff);
+     input.ki.dwFlags = KEYEVENTF_SCANCODE | KEYEVENTF_EXTENDEDKEY;
+     if (state == WL_KEYBOARD_KEY_STATE_RELEASED) input.ki.dwFlags |= KEYEVENTF_KEYUP;
+-    NtUserSendHardwareInput(hwnd, 0, &input, 0);
++    NtUserSendHardwareInput(hwnd, SEND_HWMSG_NO_RAW, &input, 0);
+ }
+ 
+ static void keyboard_handle_key(void *data, struct wl_keyboard *wl_keyboard,
+@@ -836,7 +836,7 @@ static void keyboard_handle_key(void *data, struct wl_keyboard *wl_keyboard,
+     if (scan & ~0xff) input.ki.dwFlags |= KEYEVENTF_EXTENDEDKEY;
+ 
+     if (state == WL_KEYBOARD_KEY_STATE_RELEASED) input.ki.dwFlags |= KEYEVENTF_KEYUP;
+-    NtUserSendHardwareInput(hwnd, 0, &input, 0);
++    NtUserSendHardwareInput(hwnd, SEND_HWMSG_NO_RAW, &input, 0);
+ }
+ 
+ static void keyboard_handle_modifiers(void *data, struct wl_keyboard *wl_keyboard,
+-- 
+2.53.0
+
+From 43fcabcfa9e33373237fd46116e6df69de16e5d9 Mon Sep 17 00:00:00 2001
+From: Etaash Mathamsetty
+ <45927311+Etaash-mathamsetty@users.noreply.github.com>
+Date: Mon, 5 Jan 2026 01:41:01 -0500
+Subject: [PATCH 472/486] winewayland: Don't handle meta keys.
+
+---
+ dlls/winewayland.drv/wayland_keyboard.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/dlls/winewayland.drv/wayland_keyboard.c b/dlls/winewayland.drv/wayland_keyboard.c
+index c0febcbca4b..d6caf271599 100644
+--- a/dlls/winewayland.drv/wayland_keyboard.c
++++ b/dlls/winewayland.drv/wayland_keyboard.c
+@@ -1114,6 +1114,9 @@ static void keyboard_handle_key(void *data, struct wl_keyboard *wl_keyboard,
+ 
+     TRACE_(key)("serial=%u hwnd=%p key=%d scan=%#x state=%#x\n", serial, hwnd, key, scan, state);
+ 
++    /* these keys would need to be handled in a special way otherwise they cause issues */
++    if (key == KEY_LEFTMETA || key == KEY_RIGHTMETA) return;
++
+     if (key != KEY_NUMLOCK && key != KEY_CAPSLOCK)
+         sync_mod_state(hwnd);
+ 
+-- 
+2.53.0
+
+From f7e42a8620822acea7ed304dca58ab3530e34a64 Mon Sep 17 00:00:00 2001
+From: Etaash Mathamsetty
+ <45927311+Etaash-mathamsetty@users.noreply.github.com>
+Date: Sun, 1 Feb 2026 23:56:15 -0600
+Subject: [PATCH 480/486] winewayland: Re-enable IME.
+
+---
+ dlls/winewayland.drv/wayland.c | 18 ------------------
+ 1 file changed, 18 deletions(-)
+
+diff --git a/dlls/winewayland.drv/wayland.c b/dlls/winewayland.drv/wayland.c
+index a1df276ac6c..9aa3bc26bc0 100644
+--- a/dlls/winewayland.drv/wayland.c
++++ b/dlls/winewayland.drv/wayland.c
+@@ -86,23 +86,6 @@ static const struct wl_seat_listener seat_listener =
+     wl_seat_handle_name
+ };
+ 
+-static BOOL check_ime_disabled(void)
+-{
+-    static volatile int cached = -1;
+-
+-    if (cached == -1)
+-    {
+-        const char *env = getenv("WAYLANDDRV_NO_IME");
+-
+-        if (env && !strcmp(env, "1"))
+-            cached = 1;
+-        else
+-            cached = 0;
+-    }
+-
+-    return cached;
+-}
+-
+ /**********************************************************************
+  *          Registry handling
+  */
+@@ -193,7 +176,6 @@ static void registry_handle_global(void *data, struct wl_registry *registry,
+     }
+     else if (strcmp(interface, "zwp_text_input_manager_v3") == 0)
+     {
+-        if (check_ime_disabled()) return;
+         process_wayland.zwp_text_input_manager_v3 =
+             wl_registry_bind(registry, id, &zwp_text_input_manager_v3_interface, 1);
+         if (process_wayland.seat.wl_seat) wayland_text_input_init();
+-- 
+2.53.0
+
+From 0074bb8e490ed6b6ea8d581f2432a90506ad842f Mon Sep 17 00:00:00 2001
+From: Ziia Shi <mkrsym1@gmail.com>
+Date: Sun, 1 Feb 2026 01:54:17 +0100
+Subject: [PATCH 481/486] win32u: Add SetIMEEnabled driver call.
+
+---
+ dlls/win32u/driver.c      | 12 ++++++++++++
+ include/wine/gdi_driver.h |  3 ++-
+ 2 files changed, 14 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/win32u/driver.c b/dlls/win32u/driver.c
+index 231b223a463..5eaddc7ba49 100644
+--- a/dlls/win32u/driver.c
++++ b/dlls/win32u/driver.c
+@@ -691,6 +691,11 @@ static BOOL nulldrv_SetIMECompositionRect( HWND hwnd, RECT rect )
+     return FALSE;
+ }
+ 
++static BOOL nulldrv_SetIMEEnabled( HWND hwnd, BOOL enabled )
++{
++    return FALSE;
++}
++
+ static LRESULT nulldrv_DesktopWindowProc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam )
+ {
+     return default_window_proc( hwnd, msg, wparam, lparam, FALSE );
+@@ -1119,6 +1124,11 @@ static BOOL loaderdrv_SetIMECompositionRect( HWND hwnd, RECT rect )
+     return load_driver()->pSetIMECompositionRect( hwnd, rect );
+ }
+ 
++static BOOL loaderdrv_SetIMEEnabled( HWND hwnd, BOOL enabled )
++{
++    return load_driver()->pSetIMEEnabled( hwnd, enabled );
++}
++
+ static LONG loaderdrv_ChangeDisplaySettings( LPDEVMODEW displays, LPCWSTR primary_name, HWND hwnd,
+                                              DWORD flags, LPVOID lparam )
+ {
+@@ -1259,6 +1269,7 @@ static const struct user_driver_funcs lazy_load_driver =
+     loaderdrv_ImeProcessKey,
+     loaderdrv_NotifyIMEStatus,
+     loaderdrv_SetIMECompositionRect,
++    loaderdrv_SetIMEEnabled,
+     /* cursor/icon functions */
+     nulldrv_DestroyCursorIcon,
+     loaderdrv_SetCursor,
+@@ -1362,6 +1373,7 @@ void __wine_set_user_driver( const struct user_driver_funcs *funcs, UINT version
+     SET_USER_FUNC(ImeProcessKey);
+     SET_USER_FUNC(NotifyIMEStatus);
+     SET_USER_FUNC(SetIMECompositionRect);
++    SET_USER_FUNC(SetIMEEnabled);
+     SET_USER_FUNC(DestroyCursorIcon);
+     SET_USER_FUNC(SetCursor);
+     SET_USER_FUNC(GetCursorPos);
+diff --git a/include/wine/gdi_driver.h b/include/wine/gdi_driver.h
+index e29eccb9bd3..89023466ce3 100644
+--- a/include/wine/gdi_driver.h
++++ b/include/wine/gdi_driver.h
+@@ -221,7 +221,7 @@ struct gdi_dc_funcs
+ };
+ 
+ /* increment this when you change the DC function table */
+-#define WINE_GDI_DRIVER_VERSION 102
++#define WINE_GDI_DRIVER_VERSION 103
+ 
+ #define GDI_PRIORITY_NULL_DRV        0  /* null driver */
+ #define GDI_PRIORITY_FONT_DRV      100  /* any font driver */
+@@ -345,6 +345,7 @@ struct user_driver_funcs
+     UINT    (*pImeProcessKey)(HIMC,UINT,UINT,const BYTE*);
+     void    (*pNotifyIMEStatus)(HWND,UINT);
+     BOOL    (*pSetIMECompositionRect)(HWND,RECT);
++    BOOL    (*pSetIMEEnabled)(HWND,BOOL);
+     /* cursor/icon functions */
+     void    (*pDestroyCursorIcon)(HCURSOR);
+     void    (*pSetCursor)(HWND,HCURSOR);
+-- 
+2.53.0
+
+From 31a286c804d6a1624d3c0091b6dee6059f5c4cd0 Mon Sep 17 00:00:00 2001
+From: Ziia Shi <mkrsym1@gmail.com>
+Date: Sun, 1 Feb 2026 01:56:27 +0100
+Subject: [PATCH 482/486] winewayland: Implement SetIMEEnabled driver call.
+
+---
+ dlls/winewayland.drv/wayland_text_input.c | 93 ++++++++++++++++++++---
+ dlls/winewayland.drv/waylanddrv.h         |  4 +
+ dlls/winewayland.drv/waylanddrv_main.c    |  1 +
+ dlls/winewayland.drv/window.c             |  2 +
+ 4 files changed, 89 insertions(+), 11 deletions(-)
+
+diff --git a/dlls/winewayland.drv/wayland_text_input.c b/dlls/winewayland.drv/wayland_text_input.c
+index 52cfef27e50..0bbab4e75c4 100644
+--- a/dlls/winewayland.drv/wayland_text_input.c
++++ b/dlls/winewayland.drv/wayland_text_input.c
+@@ -77,10 +77,40 @@ static void wayland_text_input_reset_all_state(struct wayland_text_input *text_i
+     wayland_text_input_reset_pending_state(text_input);
+ }
+ 
++static void wayland_text_input_ime_enable(struct wayland_text_input *text_input)
++{
++    TRACE("text_input->enabled %u\n", text_input->enabled);
++
++    if (!text_input->enabled)
++    {
++        zwp_text_input_v3_enable(text_input->zwp_text_input_v3);
++        zwp_text_input_v3_set_content_type(text_input->zwp_text_input_v3,
++                ZWP_TEXT_INPUT_V3_CONTENT_HINT_NONE,
++                ZWP_TEXT_INPUT_V3_CONTENT_PURPOSE_NORMAL);
++        zwp_text_input_v3_set_cursor_rectangle(text_input->zwp_text_input_v3, 0, 0, 0, 0);
++        zwp_text_input_v3_commit(text_input->zwp_text_input_v3);
++        text_input->enabled = TRUE;
++    }
++}
++
++static void wayland_text_input_ime_disable(struct wayland_text_input *text_input)
++{
++    TRACE("text_input->enabled %u\n", text_input->enabled);
++
++    if (text_input->enabled)
++    {
++        zwp_text_input_v3_disable(text_input->zwp_text_input_v3);
++        zwp_text_input_v3_commit(text_input->zwp_text_input_v3);
++        wayland_text_input_reset_all_state(text_input);
++        text_input->enabled = FALSE;
++    }
++}
++
+ static void text_input_enter(void *data, struct zwp_text_input_v3 *zwp_text_input_v3,
+         struct wl_surface *surface)
+ {
+     struct wayland_text_input *text_input = data;
++    struct wayland_win_data *win;
+     HWND hwnd;
+ 
+     if (!surface) return;
+@@ -88,15 +118,14 @@ static void text_input_enter(void *data, struct zwp_text_input_v3 *zwp_text_inpu
+     hwnd = wl_surface_get_user_data(surface);
+     TRACE("data %p, text_input %p, hwnd %p.\n", data, zwp_text_input_v3, hwnd);
+ 
++    if (!(win = wayland_win_data_get(hwnd))) return;
++
+     pthread_mutex_lock(&text_input->mutex);
+     text_input->focused_hwnd = hwnd;
+-    zwp_text_input_v3_enable(text_input->zwp_text_input_v3);
+-    zwp_text_input_v3_set_content_type(text_input->zwp_text_input_v3,
+-            ZWP_TEXT_INPUT_V3_CONTENT_HINT_NONE,
+-            ZWP_TEXT_INPUT_V3_CONTENT_PURPOSE_NORMAL);
+-    zwp_text_input_v3_set_cursor_rectangle(text_input->zwp_text_input_v3, 0, 0, 0, 0);
+-    zwp_text_input_v3_commit(text_input->zwp_text_input_v3);
++    if (win->num_ime_children) wayland_text_input_ime_enable(text_input);
+     pthread_mutex_unlock(&text_input->mutex);
++
++    wayland_win_data_release(win);
+ }
+ 
+ static void text_input_leave(void *data, struct zwp_text_input_v3 *zwp_text_input_v3,
+@@ -106,14 +135,12 @@ static void text_input_leave(void *data, struct zwp_text_input_v3 *zwp_text_inpu
+     TRACE("data %p, text_input %p.\n", data, zwp_text_input_v3);
+ 
+     pthread_mutex_lock(&text_input->mutex);
+-    zwp_text_input_v3_disable(text_input->zwp_text_input_v3);
+-    zwp_text_input_v3_commit(text_input->zwp_text_input_v3);
++    wayland_text_input_ime_disable(text_input);
+     if (text_input->focused_hwnd)
+     {
+         post_ime_update(text_input->focused_hwnd, 0, NULL, NULL);
+         text_input->focused_hwnd = NULL;
+     }
+-    wayland_text_input_reset_all_state(text_input);
+     pthread_mutex_unlock(&text_input->mutex);
+ }
+ 
+@@ -203,6 +230,7 @@ void wayland_text_input_init(void)
+     text_input->zwp_text_input_v3 = zwp_text_input_manager_v3_get_text_input(
+             process_wayland.zwp_text_input_manager_v3, process_wayland.seat.wl_seat);
+     zwp_text_input_v3_add_listener(text_input->zwp_text_input_v3, &text_input_listener, text_input);
++    text_input->enabled = FALSE;
+     pthread_mutex_unlock(&text_input->mutex);
+ };
+ 
+@@ -214,6 +242,7 @@ void wayland_text_input_deinit(void)
+     zwp_text_input_v3_destroy(text_input->zwp_text_input_v3);
+     text_input->zwp_text_input_v3 = NULL;
+     text_input->focused_hwnd = NULL;
++    text_input->enabled = FALSE;
+     wayland_text_input_reset_all_state(text_input);
+     pthread_mutex_unlock(&text_input->mutex);
+ };
+@@ -231,13 +260,13 @@ BOOL WAYLAND_SetIMECompositionRect(HWND hwnd, RECT rect)
+ 
+     pthread_mutex_lock(&text_input->mutex);
+ 
+-    if (!text_input->zwp_text_input_v3 || hwnd != text_input->focused_hwnd)
++    if (!text_input->zwp_text_input_v3 || !text_input->enabled || hwnd != text_input->focused_hwnd)
+         goto err;
+ 
+     if (!(data = wayland_win_data_get(hwnd)))
+         goto err;
+ 
+-    if (!(surface = data->wayland_surface))
++    if (!(surface = data->wayland_surface) || !data->num_ime_children)
+     {
+         wayland_win_data_release(data);
+         goto err;
+@@ -264,3 +293,45 @@ err:
+     pthread_mutex_unlock(&text_input->mutex);
+     return FALSE;
+ }
++
++BOOL WAYLAND_SetIMEEnabled(HWND hwnd, BOOL enabled)
++{
++    struct wayland_text_input *text_input = &process_wayland.text_input;
++    struct wayland_win_data *hwnd_data, *toplevel_data;
++    HWND toplevel;
++
++    toplevel = NtUserGetAncestor(hwnd, GA_ROOT);
++    TRACE("hwnd %p, toplevel hwnd %p, enabled %u.\n", hwnd, toplevel, enabled);
++
++    pthread_mutex_lock(&text_input->mutex);
++
++    if (!text_input->zwp_text_input_v3)
++        goto err;
++
++    if (!(hwnd_data = wayland_win_data_get(hwnd)))
++        goto err;
++
++    if (!(toplevel_data = wayland_win_data_get_nolock(toplevel)))
++    {
++        wayland_win_data_release(hwnd_data);
++        goto err;
++    }
++
++    if (!hwnd_data->ime_enabled && enabled) toplevel_data->num_ime_children++;
++    else if (hwnd_data->ime_enabled && !enabled) toplevel_data->num_ime_children--;
++    hwnd_data->ime_enabled = enabled;
++
++    if (text_input->focused_hwnd == toplevel)
++    {
++        if (toplevel_data->num_ime_children) wayland_text_input_ime_enable(text_input);
++        else wayland_text_input_ime_disable(text_input);
++    }
++
++    wayland_win_data_release(hwnd_data);
++    pthread_mutex_unlock(&text_input->mutex);
++    return TRUE;
++
++err:
++    pthread_mutex_unlock(&text_input->mutex);
++    return FALSE;
++}
+diff --git a/dlls/winewayland.drv/waylanddrv.h b/dlls/winewayland.drv/waylanddrv.h
+index 509ab945df2..db51223e7a7 100644
+--- a/dlls/winewayland.drv/waylanddrv.h
++++ b/dlls/winewayland.drv/waylanddrv.h
+@@ -170,6 +170,7 @@ struct wayland_text_input
+     } preedit, current_preedit;
+     WCHAR *commit_string;
+     HWND focused_hwnd;
++    BOOL enabled;
+     pthread_mutex_t mutex;
+ };
+ 
+@@ -467,6 +468,8 @@ struct wayland_win_data
+     BOOL force_below_hack;
+     BOOL managed;
+     BOOL layered_attribs_set;
++    BOOL ime_enabled;
++    int num_ime_children;
+ };
+ 
+ struct wayland_win_data *wayland_win_data_get(HWND hwnd);
+@@ -563,6 +566,7 @@ LRESULT WAYLAND_DesktopWindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
+ void WAYLAND_DestroyWindow(HWND hwnd);
+ void WAYLAND_FlashWindowEx(FLASHWINFO *info);
+ BOOL WAYLAND_SetIMECompositionRect(HWND hwnd, RECT rect);
++BOOL WAYLAND_SetIMEEnabled(HWND hwnd, BOOL enable);
+ void WAYLAND_SetCursor(HWND hwnd, HCURSOR hcursor);
+ BOOL WAYLAND_SetCursorPos(INT x, INT y);
+ void WAYLAND_SetLayeredWindowAttributes(HWND hwnd, COLORREF key, BYTE alpha, DWORD flags);
+diff --git a/dlls/winewayland.drv/waylanddrv_main.c b/dlls/winewayland.drv/waylanddrv_main.c
+index 228702309f4..a9210db6640 100644
+--- a/dlls/winewayland.drv/waylanddrv_main.c
++++ b/dlls/winewayland.drv/waylanddrv_main.c
+@@ -42,6 +42,7 @@ static const struct user_driver_funcs waylanddrv_funcs =
+     .pDestroyWindow = WAYLAND_DestroyWindow,
+     .pFlashWindowEx = WAYLAND_FlashWindowEx,
+     .pSetIMECompositionRect = WAYLAND_SetIMECompositionRect,
++    .pSetIMEEnabled = WAYLAND_SetIMEEnabled,
+     .pKbdLayerDescriptor = WAYLAND_KbdLayerDescriptor,
+     .pReleaseKbdTables = WAYLAND_ReleaseKbdTables,
+     .pSetCursor = WAYLAND_SetCursor,
+diff --git a/dlls/winewayland.drv/window.c b/dlls/winewayland.drv/window.c
+index 3e9eec72199..da4806f669e 100644
+--- a/dlls/winewayland.drv/window.c
++++ b/dlls/winewayland.drv/window.c
+@@ -72,6 +72,8 @@ static struct wayland_win_data *wayland_win_data_create(HWND hwnd, const struct
+ 
+     data->hwnd = hwnd;
+     data->rects = *rects;
++    data->ime_enabled = FALSE;
++    data->num_ime_children = 0;
+ 
+     pthread_mutex_lock(&win_data_mutex);
+ 
+-- 
+2.53.0
+
+From 776ee001e29a0c659ab71314f5662120e4434a4e Mon Sep 17 00:00:00 2001
+From: Ziia Shi <mkrsym1@gmail.com>
+Date: Tue, 3 Feb 2026 20:54:24 +0100
+Subject: [PATCH 484/486] win32u: Call SetIMEEnabled from
+ NtUserAssociateInputContext.
+
+---
+ dlls/win32u/imm.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/dlls/win32u/imm.c b/dlls/win32u/imm.c
+index 1c677772e0c..3858a9f092d 100644
+--- a/dlls/win32u/imm.c
++++ b/dlls/win32u/imm.c
+@@ -223,6 +223,9 @@ UINT WINAPI NtUserAssociateInputContext( HWND hwnd, HIMC ctx, ULONG flags )
+     }
+ 
+     release_win_ptr( win );
++
++    user_driver->pSetIMEEnabled( hwnd, ctx != NULL );
++
+     return ret;
+ }
+ 
+-- 
+2.53.0
+

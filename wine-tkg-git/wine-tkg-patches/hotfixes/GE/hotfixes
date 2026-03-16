@@ -20,12 +20,14 @@ _GE() {
         _patchname="03-proton-ge-patch.patch" _patchpath="$_where/wine-tkg-patches/hotfixes/GE/GE-for-proton10" _apply_GE_patch
         _patchname="04-dualsense-patch.patch" _patchpath="$_where/wine-tkg-patches/hotfixes/GE/GE-for-proton10" _apply_GE_patch
         _patchname="05-proton-ge-wayland-patch-exp.patch" _patchpath="$_where/wine-tkg-patches/hotfixes/GE/GE-for-proton10/exp" _apply_GE_patch
+        _patchname="06-proton-ge-ime-keyfixes.patch" _patchpath="$_where/wine-tkg-patches/hotfixes/GE/GE-for-proton10" _apply_GE_patch
       else
         _patchname="01-game-patch.patch" _patchpath="$_where/wine-tkg-patches/hotfixes/GE/GE-for-proton10" _apply_GE_patch
         _patchname="02-wine-pending-patch.patch" _patchpath="$_where/wine-tkg-patches/hotfixes/GE/GE-for-proton10" _apply_GE_patch
         _patchname="03-proton-ge-patch.patch" _patchpath="$_where/wine-tkg-patches/hotfixes/GE/GE-for-proton10" _apply_GE_patch
         _patchname="04-dualsense-patch.patch" _patchpath="$_where/wine-tkg-patches/hotfixes/GE/GE-for-proton10" _apply_GE_patch
         _patchname="05-proton-ge-wayland-patch.patch" _patchpath="$_where/wine-tkg-patches/hotfixes/GE/GE-for-proton10" _apply_GE_patch
+        _patchname="06-proton-ge-ime-keyfixes.patch" _patchpath="$_where/wine-tkg-patches/hotfixes/GE/GE-for-proton10" _apply_GE_patch
       fi
     elif [[ "$_plain_version" = *_8.0 ]] || [[ "$_plain_version" = *_9.0 ]]; then
       _patchname="assettocorsa-hud.patch" _patchpath="$_where/wine-tkg-patches/hotfixes/GE/game-patches" _apply_GE_patch
