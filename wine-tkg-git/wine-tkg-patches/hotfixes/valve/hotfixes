@@ -40,6 +40,12 @@ if [[ "$_plain_version" = *_10.0 ]]; then
   # https://github.com/Frogging-Family/wine-tkg-git/issues/1462
   cp "$_where"/wine-tkg-patches/hotfixes/valve/fixes/0001-Revert-winedmo-Handle-PCM-audio-big-endian-formats.mypatch "$_where"/
 
+  # IME key fix for FFXIV/Wayland: gate text-input activation on IME state
+  # Adapted from Proton-GE patches 472/481/482/484 for mainline Wine 10.0
+  if [[ "$_plain_version" = *_10.0 ]]; then
+    cp "$_where"/wine-tkg-patches/hotfixes/valve/fixes/ime-keyfixes-mainline.mypatch "$_where"/
+  fi
+
   # Proton Implement ICU, but this depends on separate project and this need to be revert. Or this cause problem
   # https://github.com/Frogging-Family/wine-tkg-git/issues/1492
   if [ "$_EXTERNAL_INSTALL" = "proton" ]; then

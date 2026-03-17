@@ -1,0 +1,196 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: IME Fix <ime@fix.local>
+Date: Mon, 17 Mar 2025 00:00:00 +0000
+Subject: [PATCH] winewayland+win32u: IME key fix for FFXIV on Wayland (mainline)
+
+Adapted from Proton-GE patches 472/481/482/484 for mainline Wine 10.0.
+Note: patches 112/120 are already in mainline; patch 129 requires
+Valve-specific server-side changes and is omitted.
+
+PATCH 472: Don't handle meta keys in the winewayland keyboard handler.
+PATCH 481: Add SetIMEEnabled driver call to win32u.
+PATCH 482: Implement SetIMEEnabled in winewayland (simplified stub using
+           a single ime_enabled flag to gate text-input activation).
+PATCH 484: Call SetIMEEnabled from NtUserAssociateInputContext.
+---
+ dlls/win32u/driver.c                      | 12 +++++++++
+ dlls/win32u/imm.c                         |  3 +++
+ dlls/winewayland.drv/wayland_keyboard.c   |  3 +++
+ dlls/winewayland.drv/wayland_text_input.c | 36 ++++++++++++++++++++++++++
+ dlls/winewayland.drv/waylanddrv.h         |  3 +++
+ dlls/winewayland.drv/waylanddrv_main.c    |  1 +
+ include/wine/gdi_driver.h                 |  3 ++-
+ 7 files changed, 60 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/winewayland.drv/wayland_keyboard.c b/dlls/winewayland.drv/wayland_keyboard.c
+index 0000000000000..0000000000001 100644
+--- a/dlls/winewayland.drv/wayland_keyboard.c
++++ b/dlls/winewayland.drv/wayland_keyboard.c
+@@ -829,5 +829,8 @@ static void keyboard_handle_key(void *data, struct wl_keyboard *wl_keyboard,
+     TRACE_(key)("serial=%u hwnd=%p key=%d scan=%#x state=%#x\n", serial, hwnd, key, scan, state);
+ 
++    /* these keys would need to be handled in a special way otherwise they cause issues */
++    if (key == KEY_LEFTMETA || key == KEY_RIGHTMETA) return;
++
+     /* NOTE: Windows normally sends VK_CONTROL + VK_MENU only if the layout has KLLF_ALTGR */
+     if (key == KEY_RIGHTALT) send_right_control(hwnd, state);
+ 
+diff --git a/include/wine/gdi_driver.h b/include/wine/gdi_driver.h
+index 0000000000000..0000000000001 100644
+--- a/include/wine/gdi_driver.h
++++ b/include/wine/gdi_driver.h
+@@ -220,3 +220,3 @@ struct gdi_dc_funcs
+ /* increment this when you change the DC function table */
+-#define WINE_GDI_DRIVER_VERSION 108
++#define WINE_GDI_DRIVER_VERSION 109
+ 
+@@ -376,4 +376,5 @@ struct user_driver_funcs
+     void    (*pNotifyIMEStatus)(HWND,UINT);
+     BOOL    (*pSetIMECompositionRect)(HWND,RECT);
++    BOOL    (*pSetIMEEnabled)(HWND,BOOL);
+     /* cursor/icon functions */
+ 
+diff --git a/dlls/win32u/driver.c b/dlls/win32u/driver.c
+index 0000000000000..0000000000001 100644
+--- a/dlls/win32u/driver.c
++++ b/dlls/win32u/driver.c
+@@ -682,7 +682,12 @@ static BOOL nulldrv_SetIMECompositionRect( HWND hwnd, RECT rect )
+ static BOOL nulldrv_SetIMECompositionRect( HWND hwnd, RECT rect )
+ {
+     return FALSE;
+ }
+ 
++static BOOL nulldrv_SetIMEEnabled( HWND hwnd, BOOL enabled )
++{
++    return FALSE;
++}
++
+ static LRESULT nulldrv_DesktopWindowProc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam )
+ 
+@@ -1110,7 +1115,12 @@ static BOOL loaderdrv_SetIMECompositionRect( HWND hwnd, RECT rect )
+ static BOOL loaderdrv_SetIMECompositionRect( HWND hwnd, RECT rect )
+ {
+     return load_driver()->pSetIMECompositionRect( hwnd, rect );
+ }
+ 
++static BOOL loaderdrv_SetIMEEnabled( HWND hwnd, BOOL enabled )
++{
++    return load_driver()->pSetIMEEnabled( hwnd, enabled );
++}
++
+ static LONG loaderdrv_ChangeDisplaySettings( LPDEVMODEW displays, LPCWSTR primary_name, HWND hwnd,
+ 
+@@ -1258,4 +1268,5 @@ static const struct user_driver_funcs lazy_load_driver =
+     loaderdrv_NotifyIMEStatus,
+     loaderdrv_SetIMECompositionRect,
++    loaderdrv_SetIMEEnabled,
+     /* cursor/icon functions */
+ 
+@@ -1362,4 +1373,5 @@ void __wine_set_user_driver( const struct user_driver_funcs *funcs, UINT version
+     SET_USER_FUNC(NotifyIMEStatus);
+     SET_USER_FUNC(SetIMECompositionRect);
++    SET_USER_FUNC(SetIMEEnabled);
+     SET_USER_FUNC(DestroyCursorIcon);
+ 
+diff --git a/dlls/win32u/imm.c b/dlls/win32u/imm.c
+index 0000000000000..0000000000001 100644
+--- a/dlls/win32u/imm.c
++++ b/dlls/win32u/imm.c
+@@ -221,5 +221,8 @@ UINT WINAPI NtUserAssociateInputContext( HWND hwnd, HIMC ctx, ULONG flags )
+ 
+     release_win_ptr( win );
++
++    user_driver->pSetIMEEnabled( hwnd, ctx != NULL );
++
+     return ret;
+ }
+ 
+diff --git a/dlls/winewayland.drv/wayland_text_input.c b/dlls/winewayland.drv/wayland_text_input.c
+index 0000000000000..0000000000001 100644
+--- a/dlls/winewayland.drv/wayland_text_input.c
++++ b/dlls/winewayland.drv/wayland_text_input.c
+@@ -91,11 +91,14 @@ static void text_input_enter(void *data, struct zwp_text_input_v3 *zwp_text_inpu
+     pthread_mutex_lock(&text_input->mutex);
+     text_input->focused_hwnd = hwnd;
+-    zwp_text_input_v3_enable(text_input->zwp_text_input_v3);
+-    zwp_text_input_v3_set_content_type(text_input->zwp_text_input_v3,
+-            ZWP_TEXT_INPUT_V3_CONTENT_HINT_NONE,
+-            ZWP_TEXT_INPUT_V3_CONTENT_PURPOSE_NORMAL);
+-    zwp_text_input_v3_set_cursor_rectangle(text_input->zwp_text_input_v3, 0, 0, 0, 0);
+-    zwp_text_input_v3_commit(text_input->zwp_text_input_v3);
++    if (text_input->ime_enabled)
++    {
++        zwp_text_input_v3_enable(text_input->zwp_text_input_v3);
++        zwp_text_input_v3_set_content_type(text_input->zwp_text_input_v3,
++                ZWP_TEXT_INPUT_V3_CONTENT_HINT_NONE,
++                ZWP_TEXT_INPUT_V3_CONTENT_PURPOSE_NORMAL);
++        zwp_text_input_v3_set_cursor_rectangle(text_input->zwp_text_input_v3, 0, 0, 0, 0);
++        zwp_text_input_v3_commit(text_input->zwp_text_input_v3);
++    }
+     pthread_mutex_unlock(&text_input->mutex);
+ }
+ 
+@@ -263,5 +266,34 @@ BOOL WAYLAND_SetIMECompositionRect(HWND hwnd, RECT rect)
+ err:
+     pthread_mutex_unlock(&text_input->mutex);
+     return FALSE;
+ }
++
++/***********************************************************************
++ *      SetIMEEnabled (WAYLANDDRV.@)
++ */
++BOOL WAYLAND_SetIMEEnabled(HWND hwnd, BOOL enabled)
++{
++    struct wayland_text_input *text_input = &process_wayland.text_input;
++
++    TRACE("hwnd %p, enabled %u.\n", hwnd, enabled);
++
++    pthread_mutex_lock(&text_input->mutex);
++    text_input->ime_enabled = enabled;
++    if (text_input->zwp_text_input_v3 && hwnd == text_input->focused_hwnd)
++    {
++        if (enabled)
++        {
++            zwp_text_input_v3_enable(text_input->zwp_text_input_v3);
++            zwp_text_input_v3_set_content_type(text_input->zwp_text_input_v3,
++                    ZWP_TEXT_INPUT_V3_CONTENT_HINT_NONE,
++                    ZWP_TEXT_INPUT_V3_CONTENT_PURPOSE_NORMAL);
++            zwp_text_input_v3_set_cursor_rectangle(text_input->zwp_text_input_v3, 0, 0, 0, 0);
++        }
++        else
++            zwp_text_input_v3_disable(text_input->zwp_text_input_v3);
++        zwp_text_input_v3_commit(text_input->zwp_text_input_v3);
++    }
++    pthread_mutex_unlock(&text_input->mutex);
++    return TRUE;
++}
+ 
+diff --git a/dlls/winewayland.drv/waylanddrv.h b/dlls/winewayland.drv/waylanddrv.h
+index 0000000000000..0000000000001 100644
+--- a/dlls/winewayland.drv/waylanddrv.h
++++ b/dlls/winewayland.drv/waylanddrv.h
+@@ -130,5 +130,6 @@ struct wayland_text_input
+     WCHAR *commit_string;
+     HWND focused_hwnd;
++    BOOL ime_enabled;
+     pthread_mutex_t mutex;
+ };
+ 
+@@ -444,4 +444,5 @@ void WAYLAND_DestroyWindow(HWND hwnd);
+ void WAYLAND_DestroyWindow(HWND hwnd);
+ BOOL WAYLAND_SetIMECompositionRect(HWND hwnd, RECT rect);
++BOOL WAYLAND_SetIMEEnabled(HWND hwnd, BOOL enable);
+ void WAYLAND_SetCursor(HWND hwnd, HCURSOR hcursor);
+ 
+diff --git a/dlls/winewayland.drv/waylanddrv_main.c b/dlls/winewayland.drv/waylanddrv_main.c
+index 0000000000000..0000000000001 100644
+--- a/dlls/winewayland.drv/waylanddrv_main.c
++++ b/dlls/winewayland.drv/waylanddrv_main.c
+@@ -40,4 +40,5 @@ static const struct user_driver_funcs waylanddrv_funcs =
+     .pDestroyWindow = WAYLAND_DestroyWindow,
+     .pSetIMECompositionRect = WAYLAND_SetIMECompositionRect,
++    .pSetIMEEnabled = WAYLAND_SetIMEEnabled,
+     .pKbdLayerDescriptor = WAYLAND_KbdLayerDescriptor,
+ 
+-- 
+2.53.0
