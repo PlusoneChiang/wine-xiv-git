@@ -21,6 +21,7 @@ jobs:
           sed -i 's/wayland_driver="false"/wayland_driver="true"/' customization.cfg
           sed -i 's/_NOLIB32="false"/_NOLIB32="wow64"/' wine-tkg-profiles/advanced-customization.cfg
           echo '_ci_build="true"' >> customization.cfg
+          echo '_LOCAL_PRESET="valve-exp"' >> customization.cfg
           touch tarplz
           yes|./non-makepkg-build.sh
       - name: Prepare release asset
@@ -74,6 +75,7 @@ jobs:
           sed -i 's/_wayland_driver="false"/_wayland_driver="true"/' customization.cfg
           sed -i 's/_NOLIB32="false"/_NOLIB32="wow64"/' wine-tkg-profiles/advanced-customization.cfg
           echo '_ci_build="true"' >> customization.cfg
+          echo '_LOCAL_PRESET="valve-exp"' >> customization.cfg
           touch tarplz
           yes|./non-makepkg-build.sh
       - name: Prepare release asset
@@ -121,6 +123,7 @@ jobs:
           sed -i 's/_NOLIB32="false"/_NOLIB32="wow64"/' wine-tkg-profiles/advanced-customization.cfg
           sed -i 's/-W ntdll-NtAlertThreadByThreadId/-W ntdll-NtAlertThreadByThreadId -W vcomp_for_dynamic_init_i8/' wine-tkg-profiles/advanced-customization.cfg
           echo '_ci_build="true"' >> customization.cfg
+          echo '_LOCAL_PRESET="valve-exp"' >> customization.cfg
           touch tarplz
           yes|./non-makepkg-build.sh
       - name: Prepare release asset
