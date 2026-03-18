@@ -3,8 +3,15 @@ From: IME Fix <ime@fix.local>
 Date: Mon, 17 Mar 2025 00:00:00 +0000
 Subject: [PATCH] winewayland+imm32: IME key fix for FFXIV on Wayland (mainline)
 
-Adapted from Proton-GE patches 472/481/482/484 for mainline Wine 10.0.
+Adapted from Proton-GE patches 129/472/481/482/484 for mainline Wine 10.0.
 
+PATCH 129: Use SEND_HWMSG_NO_RAW for keyboard events in winewayland.
+           Prevents raw input (WM_INPUT) being generated for keys forwarded
+           by fcitx5. Without this, when the chat box is open and fcitx5
+           forwards non-CJK keys (Enter, Backspace, etc.) back via
+           wl_keyboard, NtUserSendHardwareInput with flag=0 also fires
+           WM_INPUT — which FFXIV's game input system reads for movement
+           and actions, causing unintended game actions while typing.
 PATCH 472: Don't handle meta keys in the winewayland keyboard handler.
 PATCH 481: Add SetIMEEnabled driver call to win32u.
 PATCH 482: Implement SetIMEEnabled in winewayland (ime_enabled flag gates
@@ -20,17 +27,24 @@ PATCH 484 (revised trigger): Hook ImmSetOpenStatus -> NtUserNotifyIMEStatus
 ---
  dlls/imm32/imm.c                          |  2 ++
  dlls/win32u/driver.c                      | 12 +++++++++
- dlls/winewayland.drv/wayland_keyboard.c   |  3 +++
+ dlls/winewayland.drv/wayland_keyboard.c   |  7 +++++--
  dlls/winewayland.drv/wayland_text_input.c | 43 ++++++++++++++++++++++++++++
  dlls/winewayland.drv/waylanddrv.h         |  4 +++
  dlls/winewayland.drv/waylanddrv_main.c    |  2 ++
  include/wine/gdi_driver.h                 |  3 ++-
- 7 files changed, 68 insertions(+), 1 deletion(-)
+ 7 files changed, 70 insertions(+), 3 deletions(-)
 
 diff --git a/dlls/winewayland.drv/wayland_keyboard.c b/dlls/winewayland.drv/wayland_keyboard.c
 index 0000000000000..0000000000001 100644
 --- a/dlls/winewayland.drv/wayland_keyboard.c
 +++ b/dlls/winewayland.drv/wayland_keyboard.c
+@@ -811,5 +811,5 @@ static void send_right_control(HWND hwnd, uint32_t state)
+     input.ki.dwFlags = KEYEVENTF_SCANCODE | KEYEVENTF_EXTENDEDKEY;
+     if (state == WL_KEYBOARD_KEY_STATE_RELEASED) input.ki.dwFlags |= KEYEVENTF_KEYUP;
+-    NtUserSendHardwareInput(hwnd, 0, &input, 0);
++    NtUserSendHardwareInput(hwnd, SEND_HWMSG_NO_RAW, &input, 0);
+ }
+ 
 @@ -829,5 +829,8 @@ static void keyboard_handle_key(void *data, struct wl_keyboard *wl_keyboard,
      TRACE_(key)("serial=%u hwnd=%p key=%d scan=%#x state=%#x\n", serial, hwnd, key, scan, state);
  
@@ -39,6 +53,14 @@ index 0000000000000..0000000000001 100644
 +
      /* NOTE: Windows normally sends VK_CONTROL + VK_MENU only if the layout has KLLF_ALTGR */
      if (key == KEY_RIGHTALT) send_right_control(hwnd, state);
+ 
+@@ -840,5 +843,5 @@ static void keyboard_handle_key(void *data, struct wl_keyboard *wl_keyboard,
+     if (scan & ~0xff) input.ki.dwFlags |= KEYEVENTF_EXTENDEDKEY;
+ 
+     if (state == WL_KEYBOARD_KEY_STATE_RELEASED) input.ki.dwFlags |= KEYEVENTF_KEYUP;
+-    NtUserSendHardwareInput(hwnd, 0, &input, 0);
++    NtUserSendHardwareInput(hwnd, SEND_HWMSG_NO_RAW, &input, 0);
+ }
  
 diff --git a/include/wine/gdi_driver.h b/include/wine/gdi_driver.h
 index 0000000000000..0000000000001 100644
