@@ -54,7 +54,7 @@ index 0000000000000..0000000000001 100644
      /* NOTE: Windows normally sends VK_CONTROL + VK_MENU only if the layout has KLLF_ALTGR */
      if (key == KEY_RIGHTALT) send_right_control(hwnd, state);
  
-@@ -840,5 +843,5 @@ static void keyboard_handle_key(void *data, struct wl_keyboard *wl_keyboard,
+@@ -840,6 +843,6 @@ static void keyboard_handle_key(void *data, struct wl_keyboard *wl_keyboard,
      if (scan & ~0xff) input.ki.dwFlags |= KEYEVENTF_EXTENDEDKEY;
  
      if (state == WL_KEYBOARD_KEY_STATE_RELEASED) input.ki.dwFlags |= KEYEVENTF_KEYUP;
@@ -169,7 +169,7 @@ index 0000000000000..0000000000001 100644
      pthread_mutex_unlock(&text_input->mutex);
  }
  
-@@ -263,5 +266,41 @@ BOOL WAYLAND_SetIMECompositionRect(HWND hwnd, RECT rect)
+@@ -263,5 +266,42 @@ BOOL WAYLAND_SetIMECompositionRect(HWND hwnd, RECT rect)
  err:
      pthread_mutex_unlock(&text_input->mutex);
      return FALSE;
@@ -245,7 +245,7 @@ diff --git a/server/queue.c b/server/queue.c
 index 0000000000000..0000000000001 100644
 --- a/server/queue.c
 +++ b/server/queue.c
-@@ -2246,8 +2246,8 @@ }
+@@ -2246,6 +2246,6 @@ }
  /* queue a hardware message for a mouse event */
  static int queue_mouse_message( struct desktop *desktop, user_handle_t win, const union hw_input *input,
 -                                unsigned int origin, struct msg_queue *sender )
@@ -254,7 +254,7 @@ index 0000000000000..0000000000001 100644
      desktop_shm_t *desktop_shm = desktop->shared;
      struct hardware_msg_data *msg_data;
 
-@@ -2305,8 +2305,8 @@
+@@ -2305,7 +2305,7 @@
          x = desktop_shm->cursor.x;
          y = desktop_shm->cursor.y;
      }
@@ -292,7 +292,7 @@ index 0000000000000..0000000000001 100644
 +                                   unsigned int origin, struct msg_queue *sender, int repeat, unsigned int send_flags )
  {
 
-@@ -2494,8 +2494,8 @@
+@@ -2494,6 +2494,6 @@
      }
  
 -    if (!unicode && (foreground = get_foreground_thread( desktop, win )))
@@ -301,7 +301,7 @@ index 0000000000000..0000000000001 100644
          struct rawinput_message raw_msg = {0};
          raw_msg.foreground = foreground;
 
-@@ -3296,10 +3296,10 @@
+@@ -3296,8 +3296,8 @@
      switch (req->input.type)
      {
      case INPUT_MOUSE:
