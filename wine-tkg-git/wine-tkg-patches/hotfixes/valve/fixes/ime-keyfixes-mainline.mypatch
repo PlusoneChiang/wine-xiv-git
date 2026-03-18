@@ -32,7 +32,6 @@ PATCH 484 (revised trigger): Hook ImmSetOpenStatus -> NtUserNotifyIMEStatus
  7 files changed, 70 insertions(+), 3 deletions(-)
 
 diff --git a/dlls/winewayland.drv/wayland_keyboard.c b/dlls/winewayland.drv/wayland_keyboard.c
-index 0000000000000..0000000000001 100644
 --- a/dlls/winewayland.drv/wayland_keyboard.c
 +++ b/dlls/winewayland.drv/wayland_keyboard.c
 @@ -829,5 +829,8 @@ static void keyboard_handle_key(void *data, struct wl_keyboard *wl_keyboard,
@@ -45,7 +44,6 @@ index 0000000000000..0000000000001 100644
      if (key == KEY_RIGHTALT) send_right_control(hwnd, state);
  
 diff --git a/include/wine/gdi_driver.h b/include/wine/gdi_driver.h
-index 0000000000000..0000000000001 100644
 --- a/include/wine/gdi_driver.h
 +++ b/include/wine/gdi_driver.h
 @@ -222,3 +222,3 @@ struct gdi_dc_funcs
@@ -60,7 +58,6 @@ index 0000000000000..0000000000001 100644
      /* cursor/icon functions */
  
 diff --git a/dlls/win32u/driver.c b/dlls/win32u/driver.c
-index 0000000000000..0000000000001 100644
 --- a/dlls/win32u/driver.c
 +++ b/dlls/win32u/driver.c
 @@ -682,7 +682,12 @@ static BOOL nulldrv_SetIMECompositionRect( HWND hwnd, RECT rect )
@@ -102,7 +99,6 @@ index 0000000000000..0000000000001 100644
      SET_USER_FUNC(DestroyCursorIcon);
  
 diff --git a/dlls/imm32/imm.c b/dlls/imm32/imm.c
-index 0000000000000..0000000000001 100644
 --- a/dlls/imm32/imm.c
 +++ b/dlls/imm32/imm.c
 @@ -2714,6 +2714,8 @@ BOOL WINAPI ImmSetOpenStatus( HIMC himc, BOOL status )
@@ -115,7 +111,6 @@ index 0000000000000..0000000000001 100644
      }
  
 diff --git a/dlls/winewayland.drv/wayland_text_input.c b/dlls/winewayland.drv/wayland_text_input.c
-index 0000000000000..0000000000001 100644
 --- a/dlls/winewayland.drv/wayland_text_input.c
 +++ b/dlls/winewayland.drv/wayland_text_input.c
 @@ -91,11 +91,14 @@ static void text_input_enter(void *data, struct zwp_text_input_v3 *zwp_text_inpu
@@ -183,7 +178,6 @@ index 0000000000000..0000000000001 100644
 +}
  
 diff --git a/dlls/winewayland.drv/waylanddrv.h b/dlls/winewayland.drv/waylanddrv.h
-index 0000000000000..0000000000001 100644
 --- a/dlls/winewayland.drv/waylanddrv.h
 +++ b/dlls/winewayland.drv/waylanddrv.h
 @@ -130,5 +130,6 @@ struct wayland_text_input
@@ -201,7 +195,6 @@ index 0000000000000..0000000000001 100644
  void WAYLAND_SetCursor(HWND hwnd, HCURSOR hcursor);
  
 diff --git a/dlls/winewayland.drv/waylanddrv_main.c b/dlls/winewayland.drv/waylanddrv_main.c
-index 0000000000000..0000000000001 100644
 --- a/dlls/winewayland.drv/waylanddrv_main.c
 +++ b/dlls/winewayland.drv/waylanddrv_main.c
 @@ -40,4 +40,6 @@ static const struct user_driver_funcs waylanddrv_funcs =
