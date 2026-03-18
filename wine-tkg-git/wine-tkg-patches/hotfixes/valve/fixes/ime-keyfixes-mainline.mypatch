@@ -7,6 +7,7 @@ Adapted from Proton-GE patches 472/481/482/484 for mainline Wine 10.0.
 Note: PATCH 129 (SEND_HWMSG_NO_RAW) is NOT applied here because
 proton-rawinput (SEND_HWMSG_RAWINPUT=0x02) already prevents rawinput
 dispatch by default (opt-in model); the same value 2 would conflict.
+Note: gdi_driver version is 104 in wine 10.8; bumped to 105 here.
 
 PATCH 472: Don't handle meta keys in the winewayland keyboard handler.
 PATCH 481: Add SetIMEEnabled driver call to win32u.
@@ -47,12 +48,12 @@ diff --git a/include/wine/gdi_driver.h b/include/wine/gdi_driver.h
 index 0000000000000..0000000000001 100644
 --- a/include/wine/gdi_driver.h
 +++ b/include/wine/gdi_driver.h
-@@ -220,3 +220,3 @@ struct gdi_dc_funcs
+@@ -222,3 +222,3 @@ struct gdi_dc_funcs
  /* increment this when you change the DC function table */
--#define WINE_GDI_DRIVER_VERSION 108
-+#define WINE_GDI_DRIVER_VERSION 109
+-#define WINE_GDI_DRIVER_VERSION 104
++#define WINE_GDI_DRIVER_VERSION 105
  
-@@ -376,4 +376,5 @@ struct user_driver_funcs
+@@ -344,4 +344,5 @@ struct user_driver_funcs
      void    (*pNotifyIMEStatus)(HWND,UINT);
      BOOL    (*pSetIMECompositionRect)(HWND,RECT);
 +    BOOL    (*pSetIMEEnabled)(HWND,BOOL);
