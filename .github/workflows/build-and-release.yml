@@ -52,6 +52,13 @@ jobs:
           (cd repack && tar cJf "../$RELEASE_NAME" "wine-xiv-staging-fsync-git-arch-${VERSION}")
           rm -rf repack "$TAR_FILE"
           echo "RELEASE_NAME=$RELEASE_NAME" >> $GITHUB_ENV
+      - name: Upload prepare.log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: prepare-log-arch
+          path: wine-tkg-git/prepare.log
+          if-no-files-found: ignore
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -96,6 +103,13 @@ jobs:
           mv "repack/$EXTRACTED_DIR" "repack/wine-xiv-staging-fsync-git-fedora-${VERSION}"
           (cd repack && tar cJf "../$RELEASE_NAME" "wine-xiv-staging-fsync-git-fedora-${VERSION}")
           rm -rf repack "$TAR_FILE"
+      - name: Upload prepare.log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: prepare-log-fedora
+          path: wine-tkg-git/prepare.log
+          if-no-files-found: ignore
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -143,6 +157,13 @@ jobs:
           mv "repack/$EXTRACTED_DIR" "repack/wine-xiv-staging-fsync-git-ubuntu-${VERSION}"
           (cd repack && tar cJf "../$RELEASE_NAME" "wine-xiv-staging-fsync-git-ubuntu-${VERSION}")
           rm -rf repack "$TAR_FILE"
+      - name: Upload prepare.log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: prepare-log-ubuntu
+          path: wine-tkg-git/prepare.log
+          if-no-files-found: ignore
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
