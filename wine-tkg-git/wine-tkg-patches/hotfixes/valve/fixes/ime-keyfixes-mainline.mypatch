@@ -60,9 +60,7 @@ diff --git a/include/wine/gdi_driver.h b/include/wine/gdi_driver.h
 diff --git a/dlls/win32u/driver.c b/dlls/win32u/driver.c
 --- a/dlls/win32u/driver.c
 +++ b/dlls/win32u/driver.c
-@@ -682,7 +682,12 @@ static BOOL nulldrv_SetIMECompositionRect( HWND hwnd, RECT rect )
- static BOOL nulldrv_SetIMECompositionRect( HWND hwnd, RECT rect )
- {
+@@ -691,6 +691,11 @@ static BOOL nulldrv_SetIMECompositionRect( HWND hwnd, RECT rect )
      return FALSE;
  }
  
@@ -72,10 +70,9 @@ diff --git a/dlls/win32u/driver.c b/dlls/win32u/driver.c
 +}
 +
  static LRESULT nulldrv_DesktopWindowProc( HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam )
- 
-@@ -1110,7 +1115,12 @@ static BOOL loaderdrv_SetIMECompositionRect( HWND hwnd, RECT rect )
- static BOOL loaderdrv_SetIMECompositionRect( HWND hwnd, RECT rect )
  {
+     return default_window_proc( hwnd, msg, wparam, lparam, FALSE );
+@@ -1114,6 +1119,11 @@ static BOOL loaderdrv_SetIMECompositionRect( HWND hwnd, RECT rect )
      return load_driver()->pSetIMECompositionRect( hwnd, rect );
  }
  
@@ -85,7 +82,8 @@ diff --git a/dlls/win32u/driver.c b/dlls/win32u/driver.c
 +}
 +
  static LONG loaderdrv_ChangeDisplaySettings( LPDEVMODEW displays, LPCWSTR primary_name, HWND hwnd,
- 
+                                              DWORD flags, LPVOID lparam )
+ {
 @@ -1258,4 +1268,5 @@ static const struct user_driver_funcs lazy_load_driver =
      loaderdrv_NotifyIMEStatus,
      loaderdrv_SetIMECompositionRect,
@@ -134,7 +132,7 @@ diff --git a/dlls/winewayland.drv/wayland_text_input.c b/dlls/winewayland.drv/wa
      pthread_mutex_unlock(&text_input->mutex);
  }
  
-@@ -263,5 +266,42 @@ BOOL WAYLAND_SetIMECompositionRect(HWND hwnd, RECT rect)
+@@ -238,4 +238,41 @@ BOOL WAYLAND_SetIMECompositionRect(HWND hwnd, RECT rect)
  err:
      pthread_mutex_unlock(&text_input->mutex);
      return FALSE;
@@ -176,7 +174,6 @@ diff --git a/dlls/winewayland.drv/wayland_text_input.c b/dlls/winewayland.drv/wa
 +{
 +    WAYLAND_SetIMEEnabled( hwnd, status != 0 );
 +}
- 
 diff --git a/dlls/winewayland.drv/waylanddrv.h b/dlls/winewayland.drv/waylanddrv.h
 --- a/dlls/winewayland.drv/waylanddrv.h
 +++ b/dlls/winewayland.drv/waylanddrv.h
