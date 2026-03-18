@@ -3,15 +3,11 @@ From: IME Fix <ime@fix.local>
 Date: Mon, 17 Mar 2025 00:00:00 +0000
 Subject: [PATCH] winewayland+imm32: IME key fix for FFXIV on Wayland (mainline)
 
-Adapted from Proton-GE patches 129/472/481/482/484 for mainline Wine 10.0.
+Adapted from Proton-GE patches 472/481/482/484 for mainline Wine 10.0.
+Note: PATCH 129 (SEND_HWMSG_NO_RAW) is NOT applied here because
+proton-rawinput (SEND_HWMSG_RAWINPUT=0x02) already prevents rawinput
+dispatch by default (opt-in model); the same value 2 would conflict.
 
-PATCH 129: Use SEND_HWMSG_NO_RAW for keyboard events in winewayland.
-           Prevents raw input (WM_INPUT) being generated for keys forwarded
-           by fcitx5. Without this, when the chat box is open and fcitx5
-           forwards non-CJK keys (Enter, Backspace, etc.) back via
-           wl_keyboard, NtUserSendHardwareInput with flag=0 also fires
-           WM_INPUT — which FFXIV's game input system reads for movement
-           and actions, causing unintended game actions while typing.
 PATCH 472: Don't handle meta keys in the winewayland keyboard handler.
 PATCH 481: Add SetIMEEnabled driver call to win32u.
 PATCH 482: Implement SetIMEEnabled in winewayland (ime_enabled flag gates
@@ -32,19 +28,12 @@ PATCH 484 (revised trigger): Hook ImmSetOpenStatus -> NtUserNotifyIMEStatus
  dlls/winewayland.drv/waylanddrv.h         |  4 +++
  dlls/winewayland.drv/waylanddrv_main.c    |  2 ++
  include/wine/gdi_driver.h                 |  3 ++-
- 9 files changed, 81 insertions(+), 13 deletions(-)
+ 7 files changed, 70 insertions(+), 3 deletions(-)
 
 diff --git a/dlls/winewayland.drv/wayland_keyboard.c b/dlls/winewayland.drv/wayland_keyboard.c
 index 0000000000000..0000000000001 100644
 --- a/dlls/winewayland.drv/wayland_keyboard.c
 +++ b/dlls/winewayland.drv/wayland_keyboard.c
-@@ -811,5 +811,5 @@ static void send_right_control(HWND hwnd, uint32_t state)
-     input.ki.dwFlags = KEYEVENTF_SCANCODE | KEYEVENTF_EXTENDEDKEY;
-     if (state == WL_KEYBOARD_KEY_STATE_RELEASED) input.ki.dwFlags |= KEYEVENTF_KEYUP;
--    NtUserSendHardwareInput(hwnd, 0, &input, 0);
-+    NtUserSendHardwareInput(hwnd, SEND_HWMSG_NO_RAW, &input, 0);
- }
- 
 @@ -829,5 +829,8 @@ static void keyboard_handle_key(void *data, struct wl_keyboard *wl_keyboard,
      TRACE_(key)("serial=%u hwnd=%p key=%d scan=%#x state=%#x\n", serial, hwnd, key, scan, state);
  
@@ -53,14 +42,6 @@ index 0000000000000..0000000000001 100644
 +
      /* NOTE: Windows normally sends VK_CONTROL + VK_MENU only if the layout has KLLF_ALTGR */
      if (key == KEY_RIGHTALT) send_right_control(hwnd, state);
- 
-@@ -840,6 +843,6 @@ static void keyboard_handle_key(void *data, struct wl_keyboard *wl_keyboard,
-     if (scan & ~0xff) input.ki.dwFlags |= KEYEVENTF_EXTENDEDKEY;
- 
-     if (state == WL_KEYBOARD_KEY_STATE_RELEASED) input.ki.dwFlags |= KEYEVENTF_KEYUP;
--    NtUserSendHardwareInput(hwnd, 0, &input, 0);
-+    NtUserSendHardwareInput(hwnd, SEND_HWMSG_NO_RAW, &input, 0);
- }
  
 diff --git a/include/wine/gdi_driver.h b/include/wine/gdi_driver.h
 index 0000000000000..0000000000001 100644
@@ -77,18 +58,6 @@ index 0000000000000..0000000000001 100644
 +    BOOL    (*pSetIMEEnabled)(HWND,BOOL);
      /* cursor/icon functions */
  
-diff --git a/include/ntuser.h b/include/ntuser.h
-index 0000000000000..0000000000001 100644
---- a/include/ntuser.h
-+++ b/include/ntuser.h
-@@ -1574,5 +1574,6 @@
- C_ASSERT(sizeof(struct hid_packet) == offsetof(struct hid_packet, data[0]));
- 
-+#define SEND_HWMSG_NO_RAW 2
- struct send_hardware_input_params
- {
-     UINT flags;
-
 diff --git a/dlls/win32u/driver.c b/dlls/win32u/driver.c
 index 0000000000000..0000000000001 100644
 --- a/dlls/win32u/driver.c
@@ -241,77 +210,5 @@ index 0000000000000..0000000000001 100644
 +    .pSetIMEEnabled = WAYLAND_SetIMEEnabled,
      .pKbdLayerDescriptor = WAYLAND_KbdLayerDescriptor,
  
-diff --git a/server/queue.c b/server/queue.c
-index 0000000000000..0000000000001 100644
---- a/server/queue.c
-+++ b/server/queue.c
-@@ -2246,6 +2246,6 @@ }
- /* queue a hardware message for a mouse event */
- static int queue_mouse_message( struct desktop *desktop, user_handle_t win, const union hw_input *input,
--                                unsigned int origin, struct msg_queue *sender )
-+                                unsigned int origin, struct msg_queue *sender, unsigned int send_flags )
- {
-     desktop_shm_t *desktop_shm = desktop->shared;
-     struct hardware_msg_data *msg_data;
-
-@@ -2305,7 +2305,7 @@
-         x = desktop_shm->cursor.x;
-         y = desktop_shm->cursor.y;
-     }
--    if ((foreground = get_foreground_thread( desktop, win )))
-+    if (!(send_flags & SEND_HWMSG_NO_RAW) && (foreground = get_foreground_thread( desktop, win )))
-     {
-         memset( &raw_msg, 0, sizeof(raw_msg) );
-         raw_msg.foreground = foreground;
-
-@@ -2352,23 +2352,23 @@
- static int queue_keyboard_message( struct desktop *desktop, user_handle_t win, const union hw_input *input,
--                                   unsigned int origin, struct msg_queue *sender, int repeat );
-+                                   unsigned int origin, struct msg_queue *sender, int repeat, unsigned int send_flags );
- 
- static void key_repeat_timeout( void *private )
- {
-     struct desktop *desktop = private;
- 
-     desktop->key_repeat.timeout = NULL;
--    queue_keyboard_message( desktop, desktop->key_repeat.win, &desktop->key_repeat.input, IMO_HARDWARE, NULL, 1 );
-+    queue_keyboard_message( desktop, desktop->key_repeat.win, &desktop->key_repeat.input, IMO_HARDWARE, NULL, 1, 0 );
- }
- 
- static void stop_key_repeat( struct desktop *desktop )
- {
-     if (desktop->key_repeat.timeout) remove_timeout_user( desktop->key_repeat.timeout );
-     desktop->key_repeat.timeout = NULL;
-     desktop->key_repeat.win = 0;
-     memset( &desktop->key_repeat.input, 0, sizeof(desktop->key_repeat.input) );
- }
- 
- /* queue a hardware message for a keyboard event */
- static int queue_keyboard_message( struct desktop *desktop, user_handle_t win, const union hw_input *input,
--                                   unsigned int origin, struct msg_queue *sender, int repeat )
-+                                   unsigned int origin, struct msg_queue *sender, int repeat, unsigned int send_flags )
- {
-
-@@ -2494,6 +2494,6 @@
-     }
- 
--    if (!unicode && (foreground = get_foreground_thread( desktop, win )))
-+    if (!unicode && !(send_flags & SEND_HWMSG_NO_RAW) && (foreground = get_foreground_thread( desktop, win )))
-     {
-         struct rawinput_message raw_msg = {0};
-         raw_msg.foreground = foreground;
-
-@@ -3296,8 +3296,8 @@
-     switch (req->input.type)
-     {
-     case INPUT_MOUSE:
--        wait = queue_mouse_message( desktop, req->win, &req->input, origin, sender );
-+        wait = queue_mouse_message( desktop, req->win, &req->input, origin, sender, req->flags );
-         break;
-     case INPUT_KEYBOARD:
--        wait = queue_keyboard_message( desktop, req->win, &req->input, origin, sender, 0 );
-+        wait = queue_keyboard_message( desktop, req->win, &req->input, origin, sender, 0, req->flags );
-         break;
-
 -- 
 2.53.0
