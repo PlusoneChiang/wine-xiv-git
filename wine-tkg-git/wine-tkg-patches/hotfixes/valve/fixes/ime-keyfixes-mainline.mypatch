@@ -32,7 +32,7 @@ PATCH 484 (revised trigger): Hook ImmSetOpenStatus -> NtUserNotifyIMEStatus
  dlls/winewayland.drv/waylanddrv.h         |  4 +++
  dlls/winewayland.drv/waylanddrv_main.c    |  2 ++
  include/wine/gdi_driver.h                 |  3 ++-
- 7 files changed, 70 insertions(+), 3 deletions(-)
+ 9 files changed, 81 insertions(+), 13 deletions(-)
 
 diff --git a/dlls/winewayland.drv/wayland_keyboard.c b/dlls/winewayland.drv/wayland_keyboard.c
 index 0000000000000..0000000000001 100644
@@ -77,6 +77,18 @@ index 0000000000000..0000000000001 100644
 +    BOOL    (*pSetIMEEnabled)(HWND,BOOL);
      /* cursor/icon functions */
  
+diff --git a/include/ntuser.h b/include/ntuser.h
+index 0000000000000..0000000000001 100644
+--- a/include/ntuser.h
++++ b/include/ntuser.h
+@@ -1574,5 +1574,6 @@
+ C_ASSERT(sizeof(struct hid_packet) == offsetof(struct hid_packet, data[0]));
+ 
++#define SEND_HWMSG_NO_RAW 2
+ struct send_hardware_input_params
+ {
+     UINT flags;
+
 diff --git a/dlls/win32u/driver.c b/dlls/win32u/driver.c
 index 0000000000000..0000000000001 100644
 --- a/dlls/win32u/driver.c
@@ -229,5 +241,77 @@ index 0000000000000..0000000000001 100644
 +    .pSetIMEEnabled = WAYLAND_SetIMEEnabled,
      .pKbdLayerDescriptor = WAYLAND_KbdLayerDescriptor,
  
+diff --git a/server/queue.c b/server/queue.c
+index 0000000000000..0000000000001 100644
+--- a/server/queue.c
++++ b/server/queue.c
+@@ -2246,8 +2246,8 @@ }
+ /* queue a hardware message for a mouse event */
+ static int queue_mouse_message( struct desktop *desktop, user_handle_t win, const union hw_input *input,
+-                                unsigned int origin, struct msg_queue *sender )
++                                unsigned int origin, struct msg_queue *sender, unsigned int send_flags )
+ {
+     desktop_shm_t *desktop_shm = desktop->shared;
+     struct hardware_msg_data *msg_data;
+
+@@ -2305,8 +2305,8 @@
+         x = desktop_shm->cursor.x;
+         y = desktop_shm->cursor.y;
+     }
+-    if ((foreground = get_foreground_thread( desktop, win )))
++    if (!(send_flags & SEND_HWMSG_NO_RAW) && (foreground = get_foreground_thread( desktop, win )))
+     {
+         memset( &raw_msg, 0, sizeof(raw_msg) );
+         raw_msg.foreground = foreground;
+
+@@ -2352,23 +2352,23 @@
+ static int queue_keyboard_message( struct desktop *desktop, user_handle_t win, const union hw_input *input,
+-                                   unsigned int origin, struct msg_queue *sender, int repeat );
++                                   unsigned int origin, struct msg_queue *sender, int repeat, unsigned int send_flags );
+ 
+ static void key_repeat_timeout( void *private )
+ {
+     struct desktop *desktop = private;
+ 
+     desktop->key_repeat.timeout = NULL;
+-    queue_keyboard_message( desktop, desktop->key_repeat.win, &desktop->key_repeat.input, IMO_HARDWARE, NULL, 1 );
++    queue_keyboard_message( desktop, desktop->key_repeat.win, &desktop->key_repeat.input, IMO_HARDWARE, NULL, 1, 0 );
+ }
+ 
+ static void stop_key_repeat( struct desktop *desktop )
+ {
+     if (desktop->key_repeat.timeout) remove_timeout_user( desktop->key_repeat.timeout );
+     desktop->key_repeat.timeout = NULL;
+     desktop->key_repeat.win = 0;
+     memset( &desktop->key_repeat.input, 0, sizeof(desktop->key_repeat.input) );
+ }
+ 
+ /* queue a hardware message for a keyboard event */
+ static int queue_keyboard_message( struct desktop *desktop, user_handle_t win, const union hw_input *input,
+-                                   unsigned int origin, struct msg_queue *sender, int repeat )
++                                   unsigned int origin, struct msg_queue *sender, int repeat, unsigned int send_flags )
+ {
+
+@@ -2494,8 +2494,8 @@
+     }
+ 
+-    if (!unicode && (foreground = get_foreground_thread( desktop, win )))
++    if (!unicode && !(send_flags & SEND_HWMSG_NO_RAW) && (foreground = get_foreground_thread( desktop, win )))
+     {
+         struct rawinput_message raw_msg = {0};
+         raw_msg.foreground = foreground;
+
+@@ -3296,10 +3296,10 @@
+     switch (req->input.type)
+     {
+     case INPUT_MOUSE:
+-        wait = queue_mouse_message( desktop, req->win, &req->input, origin, sender );
++        wait = queue_mouse_message( desktop, req->win, &req->input, origin, sender, req->flags );
+         break;
+     case INPUT_KEYBOARD:
+-        wait = queue_keyboard_message( desktop, req->win, &req->input, origin, sender, 0 );
++        wait = queue_keyboard_message( desktop, req->win, &req->input, origin, sender, 0, req->flags );
+         break;
+
 -- 
 2.53.0
