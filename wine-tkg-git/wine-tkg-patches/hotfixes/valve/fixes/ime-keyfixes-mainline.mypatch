@@ -1,26 +1,31 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: IME Fix <ime@fix.local>
 Date: Mon, 17 Mar 2025 00:00:00 +0000
-Subject: [PATCH] winewayland+win32u: IME key fix for FFXIV on Wayland (mainline)
+Subject: [PATCH] winewayland+imm32: IME key fix for FFXIV on Wayland (mainline)
 
 Adapted from Proton-GE patches 472/481/482/484 for mainline Wine 10.0.
-Note: patches 112/120 are already in mainline; patch 129 requires
-Valve-specific server-side changes and is omitted.
 
 PATCH 472: Don't handle meta keys in the winewayland keyboard handler.
 PATCH 481: Add SetIMEEnabled driver call to win32u.
-PATCH 482: Implement SetIMEEnabled in winewayland (simplified stub using
-           a single ime_enabled flag to gate text-input activation).
-PATCH 484: Call SetIMEEnabled from NtUserAssociateInputContext.
+PATCH 482: Implement SetIMEEnabled in winewayland (ime_enabled flag gates
+           text-input activation so fcitx5 keyboard grab is not held
+           during gameplay).
+PATCH 484 (revised trigger): Hook ImmSetOpenStatus -> NtUserNotifyIMEStatus
+           -> pNotifyIMEStatus -> WAYLAND_NotifyIMEStatus -> SetIMEEnabled.
+           ImmSetOpenStatus reflects whether the APPLICATION has explicitly
+           opened the IME for text composition (e.g. FFXIV chat box), which
+           is the correct semantic. NtUserAssociateInputContext fires for
+           any window with a default IMC (even En-US), so it was the wrong
+           trigger and caused ime_enabled=true at all times when fcitx5 runs.
 ---
+ dlls/imm32/imm.c                          |  2 ++
  dlls/win32u/driver.c                      | 12 +++++++++
- dlls/win32u/imm.c                         |  3 +++
  dlls/winewayland.drv/wayland_keyboard.c   |  3 +++
- dlls/winewayland.drv/wayland_text_input.c | 36 ++++++++++++++++++++++++++
- dlls/winewayland.drv/waylanddrv.h         |  3 +++
- dlls/winewayland.drv/waylanddrv_main.c    |  1 +
+ dlls/winewayland.drv/wayland_text_input.c | 43 ++++++++++++++++++++++++++++
+ dlls/winewayland.drv/waylanddrv.h         |  4 +++
+ dlls/winewayland.drv/waylanddrv_main.c    |  2 ++
  include/wine/gdi_driver.h                 |  3 ++-
- 7 files changed, 60 insertions(+), 1 deletion(-)
+ 7 files changed, 68 insertions(+), 1 deletion(-)
 
 diff --git a/dlls/winewayland.drv/wayland_keyboard.c b/dlls/winewayland.drv/wayland_keyboard.c
 index 0000000000000..0000000000001 100644
@@ -92,18 +97,18 @@ index 0000000000000..0000000000001 100644
 +    SET_USER_FUNC(SetIMEEnabled);
      SET_USER_FUNC(DestroyCursorIcon);
  
-diff --git a/dlls/win32u/imm.c b/dlls/win32u/imm.c
+diff --git a/dlls/imm32/imm.c b/dlls/imm32/imm.c
 index 0000000000000..0000000000001 100644
---- a/dlls/win32u/imm.c
-+++ b/dlls/win32u/imm.c
-@@ -221,5 +221,8 @@ UINT WINAPI NtUserAssociateInputContext( HWND hwnd, HIMC ctx, ULONG flags )
- 
-     release_win_ptr( win );
+--- a/dlls/imm32/imm.c
++++ b/dlls/imm32/imm.c
+@@ -2714,6 +2714,8 @@ BOOL WINAPI ImmSetOpenStatus( HIMC himc, BOOL status )
+     {
+         ctx->fOpen = status;
+         ImmNotifyIME( himc, NI_CONTEXTUPDATED, 0, IMC_SETOPENSTATUS );
++        if (ctx->hWnd) NtUserNotifyIMEStatus( ctx->hWnd, status );
 +
-+    user_driver->pSetIMEEnabled( hwnd, ctx != NULL );
-+
-     return ret;
- }
+         SendMessageW( ctx->hWnd, WM_IME_NOTIFY, IMN_SETOPENSTATUS, 0 );
+     }
  
 diff --git a/dlls/winewayland.drv/wayland_text_input.c b/dlls/winewayland.drv/wayland_text_input.c
 index 0000000000000..0000000000001 100644
@@ -130,7 +135,7 @@ index 0000000000000..0000000000001 100644
      pthread_mutex_unlock(&text_input->mutex);
  }
  
-@@ -263,5 +266,34 @@ BOOL WAYLAND_SetIMECompositionRect(HWND hwnd, RECT rect)
+@@ -263,5 +266,41 @@ BOOL WAYLAND_SetIMECompositionRect(HWND hwnd, RECT rect)
  err:
      pthread_mutex_unlock(&text_input->mutex);
      return FALSE;
@@ -164,6 +169,14 @@ index 0000000000000..0000000000001 100644
 +    pthread_mutex_unlock(&text_input->mutex);
 +    return TRUE;
 +}
++
++/***********************************************************************
++ *      NotifyIMEStatus (WAYLANDDRV.@)
++ */
++void WAYLAND_NotifyIMEStatus( HWND hwnd, UINT status )
++{
++    WAYLAND_SetIMEEnabled( hwnd, status != 0 );
++}
  
 diff --git a/dlls/winewayland.drv/waylanddrv.h b/dlls/winewayland.drv/waylanddrv.h
 index 0000000000000..0000000000001 100644
@@ -176,19 +189,21 @@ index 0000000000000..0000000000001 100644
      pthread_mutex_t mutex;
  };
  
-@@ -444,4 +444,5 @@ void WAYLAND_DestroyWindow(HWND hwnd);
+@@ -444,4 +444,6 @@ void WAYLAND_DestroyWindow(HWND hwnd);
  void WAYLAND_DestroyWindow(HWND hwnd);
  BOOL WAYLAND_SetIMECompositionRect(HWND hwnd, RECT rect);
 +BOOL WAYLAND_SetIMEEnabled(HWND hwnd, BOOL enable);
++void WAYLAND_NotifyIMEStatus(HWND hwnd, UINT status);
  void WAYLAND_SetCursor(HWND hwnd, HCURSOR hcursor);
  
 diff --git a/dlls/winewayland.drv/waylanddrv_main.c b/dlls/winewayland.drv/waylanddrv_main.c
 index 0000000000000..0000000000001 100644
 --- a/dlls/winewayland.drv/waylanddrv_main.c
 +++ b/dlls/winewayland.drv/waylanddrv_main.c
-@@ -40,4 +40,5 @@ static const struct user_driver_funcs waylanddrv_funcs =
+@@ -40,4 +40,6 @@ static const struct user_driver_funcs waylanddrv_funcs =
      .pDestroyWindow = WAYLAND_DestroyWindow,
      .pSetIMECompositionRect = WAYLAND_SetIMECompositionRect,
++    .pNotifyIMEStatus = WAYLAND_NotifyIMEStatus,
 +    .pSetIMEEnabled = WAYLAND_SetIMEEnabled,
      .pKbdLayerDescriptor = WAYLAND_KbdLayerDescriptor,
  
